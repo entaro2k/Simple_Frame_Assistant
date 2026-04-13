@@ -29,6 +29,8 @@ local IsShiftKeyDown = IsShiftKeyDown
 SFA.frames = { friendly = {}, enemy = {} }
 SFA.headers = {}
 SFA.pendingRefresh = false
+SFA.pendingLayout = false
+SFA.pendingVisibility = false
 SFA.healerSpecs = {
   [105] = true,
   [256] = true,
@@ -307,9 +309,9 @@ function SFA:EnsureEnemyTargetXNameplate(frame)
 
   local anchor = self:GetNameplateAnchor(frame)
   if anchor then
-    mark:SetPoint("BOTTOMLEFT", anchor, "TOPLEFT", 0, 2)
+    mark:SetPoint("BOTTOM", anchor, "TOP", 0, 2)
   else
-    mark:SetPoint("CENTER", frame, "TOP", -12, -10)
+    mark:SetPoint("CENTER", frame, "TOP", 0, -10)
   end
 
   mark:Hide()
@@ -342,7 +344,7 @@ function SFA:UpdateEnemyNameplateOverlays(unit)
     local anchor = self:GetNameplateAnchor(frame)
     if anchor then
       xMark:ClearAllPoints()
-      xMark:SetPoint("BOTTOMLEFT", anchor, "TOPLEFT", 0, 2)
+      xMark:SetPoint("BOTTOM", anchor, "TOP", 0, 2)
     end
     xMark:Show()
   else
@@ -513,6 +515,58 @@ local function AddUniqueUnit(units, unit)
   return true
 end
 
+
+
+
+
+function SFA:GetArenaEnemySlotCount()
+  local inArena = false
+  if IsActiveBattlefieldArena then
+    local ok, result = pcall(IsActiveBattlefieldArena)
+    inArena = ok and result or false
+  end
+  if not inArena then
+    return 0
+  end
+
+  local count = 0
+
+  if GetNumArenaOpponentSpecs then
+    local ok, result = pcall(GetNumArenaOpponentSpecs)
+    if ok and type(result) == "number" and result > 0 then
+      count = math.max(count, result)
+    end
+  end
+
+  for i = 1, 3 do
+    local unit = "arena" .. i
+    local exists = false
+    if UnitExists then
+      local ok, result = pcall(UnitExists, unit)
+      exists = ok and result or false
+    end
+    if exists then
+      count = math.max(count, i)
+    end
+  end
+
+  if count <= 0 then
+    -- conservative fallback: 2 slots until a third is confirmed
+    count = 2
+  end
+
+  if count > 3 then count = 3 end
+  return count
+end
+
+function SFA:IsReservedArenaEnemySlot(group, unit)
+  if group ~= "enemy" or not unit then return false end
+  local idx = tonumber(tostring(unit):match("^arena(%d+)$"))
+  if not idx then return false end
+  local count = self:GetArenaEnemySlotCount()
+  return idx <= count
+end
+
 function SFA:GetDisplayedUnits(group)
   if self.GetSimulationEnabled and self:GetSimulationEnabled() then
     local scenario = (self.db and self.db.simulation and self.db.simulation.scenario) or "arena3v3"
@@ -572,17 +626,12 @@ function SFA:GetDisplayedUnits(group)
   end
 
   if inArena then
-    for i = 1, 3 do
-      local unit = "arena" .. i
-      local exists = false
-      if UnitExists then
-        local ok, result = pcall(UnitExists, unit)
-        exists = ok and result or false
-      end
-      if exists then
-        table.insert(units, unit)
-      end
+    local count = self:GetArenaEnemySlotCount()
+    local arenaUnits = {}
+    for i = 1, count do
+      arenaUnits[#arenaUnits + 1] = "arena" .. i
     end
+    return arenaUnits
   else
     local targetExists = false
     if UnitExists then
@@ -806,6 +855,134 @@ function SFA:UpdateTargetHighlight(frame, group)
 end
 
 
+
+
+function SFA:UpdateFrameDataOnly(frame, group)
+  local unit = frame.unit
+  local sim = frame.simulationData or self:GetSimulationData(unit)
+
+  if sim then
+    frame.health:SetMinMaxValues(0, 100)
+    frame.health:SetValue(math.floor((sim.health or 1) * 100 + 0.5))
+    frame.name:SetText(sim.name or unit)
+
+    local r, g, b = 0.1, 0.8, 0.2
+    if group == "enemy" and self.db.enemy.classColor and sim.class and RAID_CLASS_COLORS[sim.class] then
+      local c = RAID_CLASS_COLORS[sim.class]
+      r, g, b = c.r, c.g, c.b
+    elseif group == "friendly" and sim.class and RAID_CLASS_COLORS[sim.class] then
+      local c = RAID_CLASS_COLORS[sim.class]
+      r, g, b = c.r * 0.7 + 0.1, c.g * 0.7 + 0.1, c.b * 0.7 + 0.1
+    end
+    frame.health:SetStatusBarColor(r, g, b, 0.58)
+    frame.value:SetText(sim.value or "")
+
+    frame.role:SetText("")
+    if frame.roleIcon then frame.roleIcon:Hide() end
+    if sim.healer then
+      frame.role:SetText("+")
+      frame.role:SetTextColor(1, 0.12, 0.12, 1)
+      frame.role:Show()
+    elseif sim.tank then
+      if frame.roleIcon then
+        frame.roleIcon:SetTexture("Interface\\Icons\\INV_Shield_06")
+        frame.roleIcon:SetVertexColor(1, 1, 1, 1)
+        frame.roleIcon:Show()
+      end
+      frame.role:Hide()
+    else
+      frame.role:Hide()
+    end
+
+    self:UpdateAuraIcons(frame, group)
+    self:UpdateTargetXMark(frame, group)
+    self:UpdateTargetHighlight(frame, group)
+    return
+  end
+
+  local exists = unit and UnitExists(unit)
+  local reservedArenaEnemy = self:IsReservedArenaEnemySlot(group, unit)
+
+  if not exists and not reservedArenaEnemy then
+    return
+  end
+
+  if not exists and reservedArenaEnemy then
+    frame.health:SetMinMaxValues(0, 100)
+    frame.health:SetValue(0)
+    frame.name:SetText(frame.lastKnownName or ("Enemy " .. tostring(unit):gsub("arena", "")))
+    frame.health:SetStatusBarColor(0.35, 0.35, 0.35, 0.58)
+    frame.value:SetText("")
+    frame.role:SetText("")
+    if frame.roleIcon then frame.roleIcon:Hide() end
+    self:UpdateAuraIcons(frame, group)
+    self:UpdateTargetXMark(frame, group)
+    self:UpdateTargetHighlight(frame, group)
+    return
+  end
+
+  local current = UnitHealth(unit)
+  local maxHealth = UnitHealthMax(unit)
+  frame.health:SetMinMaxValues(0, maxHealth or 1)
+  frame.health:SetValue(current or 0)
+
+  local name = UnitName(unit) or unit
+  frame.lastKnownName = name
+  local _, classFile = UnitClass(unit)
+  frame.name:SetText(name)
+
+  local r, g, b = 0.1, 0.8, 0.2
+  if group == "enemy" and self.db.enemy.classColor and classFile and RAID_CLASS_COLORS[classFile] then
+    local c = RAID_CLASS_COLORS[classFile]
+    r, g, b = c.r, c.g, c.b
+  elseif group == "friendly" then
+    if self.db.friendly and self.db.friendly.classColor and classFile and RAID_CLASS_COLORS[classFile] then
+      local c = RAID_CLASS_COLORS[classFile]
+      r, g, b = c.r, c.g, c.b
+    else
+      r, g, b = 0.1, 0.75, 0.25
+    end
+  end
+
+  if not UnitIsConnected(unit) or UnitIsDeadOrGhost(unit) then
+    r, g, b = 0.35, 0.35, 0.35
+  end
+  frame.health:SetStatusBarColor(r, g, b, 0.58)
+
+  if not UnitIsConnected(unit) then
+    frame.value:SetText("OFF")
+  elseif UnitIsDeadOrGhost(unit) then
+    frame.value:SetText("DEAD")
+  else
+    frame.value:SetText("")
+  end
+
+  local roleVisual = nil
+  if (group == "enemy" and self.db.enemy.healerMarker) or group == "friendly" then
+    roleVisual = self:GetUnitRoleVisual(unit, frame)
+  end
+  frame.role:SetText("")
+  if frame.roleIcon then frame.roleIcon:Hide() end
+  if roleVisual == "HEALER" then
+    frame.role:SetText("+")
+    frame.role:SetTextColor(1, 0.12, 0.12, 1)
+    frame.role:Show()
+  elseif roleVisual == "TANK" then
+    if frame.roleIcon then
+      frame.roleIcon:SetTexture("Interface\\Icons\\INV_Shield_06")
+      frame.roleIcon:SetVertexColor(1, 1, 1, 1)
+      frame.roleIcon:Show()
+    end
+    frame.role:Hide()
+  else
+    frame.role:Hide()
+  end
+
+  self:UpdateAuraIcons(frame, group)
+  self:UpdateTargetXMark(frame, group)
+  self:UpdateTargetHighlight(frame, group)
+end
+
 function SFA:UpdateFrameVisual(frame, group)
   local unit = frame.unit
 
@@ -870,13 +1047,30 @@ function SFA:UpdateFrameVisual(frame, group)
   end
 
   local exists = unit and UnitExists(unit)
-  if not exists then
+  local reservedArenaEnemy = self:IsReservedArenaEnemySlot(group, unit)
+
+  if not exists and not reservedArenaEnemy then
     frame.targetBorder:Hide()
     frame:Hide()
     return
   end
 
   frame:Show()
+
+  if not exists and reservedArenaEnemy then
+    frame.health:SetMinMaxValues(0, 100)
+    frame.health:SetValue(0)
+    frame.name:SetText(frame.lastKnownName or ("Enemy " .. tostring(unit):gsub("arena", "")))
+    frame.health:SetStatusBarColor(0.35, 0.35, 0.35, 0.58)
+    frame.value:SetText("")
+    frame.role:SetText("")
+    if frame.roleIcon then frame.roleIcon:Hide() end
+    self:UpdateAuraIcons(frame, group)
+    self:UpdateTargetXMark(frame, group)
+    self:UpdateTargetHighlight(frame, group)
+    return
+  end
+
   local current = UnitHealth(unit)
   local maxHealth = UnitHealthMax(unit)
   frame.health:SetMinMaxValues(0, maxHealth or 1)
@@ -934,15 +1128,35 @@ function SFA:UpdateFrameVisual(frame, group)
 end
 
 
+
 function SFA:RefreshGroup(group)
   local cfg = self.db[group]
+
   if not cfg.enabled then
+    if InCombatLockdown() then
+      self.pendingVisibility = true
+      return
+    end
     if self.headers[group] then self.headers[group]:Hide() end
-    for _, frame in ipairs(self.frames[group]) do frame.simulationData = nil; frame.unit = nil; frame:Hide() end
+    for _, frame in ipairs(self.frames[group]) do
+      frame.simulationData = nil
+      frame.unit = nil
+      frame:Hide()
+    end
     return
   end
 
   if self:IsSimulationEnabled() then
+    if InCombatLockdown() then
+      self.pendingVisibility = true
+      for _, frame in ipairs(self.frames[group]) do
+        if frame.simulationData then
+          self:UpdateFrameDataOnly(frame, group)
+        end
+      end
+      return
+    end
+
     local header = self.headers[group]
     local profile = self:GetSimulationProfile() or {}
     local entries = (profile[group] or {})
@@ -977,13 +1191,22 @@ function SFA:RefreshGroup(group)
   local units = self:GetDisplayedUnits(group)
   local activeCount = #units
 
+  if InCombatLockdown() then
+    self.pendingVisibility = true
+    for i, frame in ipairs(self.frames[group]) do
+      if frame.unit or self:IsReservedArenaEnemySlot(group, frame.unit) then
+        self:UpdateFrameDataOnly(frame, group)
+      end
+    end
+    return
+  end
+
   if header then
     header:SetScale(cfg.scale)
     header:SetShown(activeCount > 0)
     if header.label then header.label:SetShown(not self.db.hideHeaders) end
   end
 
-  local visibleIndex = 1
   for i, frame in ipairs(self.frames[group]) do
     local unit = units[i]
     frame.unit = unit
@@ -992,7 +1215,6 @@ function SFA:RefreshGroup(group)
         self:ApplyClickBindings(frame, group)
       end
       self:UpdateFrameVisual(frame, group)
-      visibleIndex = visibleIndex + 1
     else
       frame.unit = nil
       frame:Hide()
@@ -1208,6 +1430,10 @@ function SFA:RefreshAll()
 end
 
 function SFA:ApplyLayout(group)
+  if InCombatLockdown() then
+    self.pendingLayout = true
+    return
+  end
   local cfg = self.db[group]
   local header = self.headers[group]
   if not header then return end
@@ -1245,6 +1471,7 @@ function SFA:InitializeFrames()
   self:RefreshGroup("enemy")
 end
 
+
 function SFA:OnEvent(event, ...)
   if event == "PLAYER_LOGIN" then
     self:InitializeDB()
@@ -1256,10 +1483,25 @@ function SFA:OnEvent(event, ...)
     return
   end
 
+  if event == "PLAYER_REGEN_ENABLED" then
+    local hadPending = self.pendingRefresh or self.pendingLayout or self.pendingVisibility
+    self.pendingRefresh = false
+    self.pendingLayout = false
+    self.pendingVisibility = false
+    if hadPending then
+      self:QueueRefresh(0.01)
+      if not InCombatLockdown() then
+        self:RefreshEnemyNameplateOverlays()
+      end
+    end
+  end
+
   if event == "NAME_PLATE_UNIT_ADDED" then
     local unit = ...
     self:UpdateNameplateQuestIndicator(unit)
-    self:UpdateEnemyNameplateOverlays(unit)
+    if not InCombatLockdown() then
+      self:UpdateEnemyNameplateOverlays(unit)
+    end
   elseif event == "NAME_PLATE_UNIT_REMOVED" then
     local unit = ...
     if C_NamePlate and C_NamePlate.GetNamePlateForUnit then
@@ -1277,12 +1519,21 @@ function SFA:OnEvent(event, ...)
   elseif event == "QUEST_LOG_UPDATE" or event == "UNIT_QUEST_LOG_CHANGED" or event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED" then
     self:RefreshQuestIndicators()
   elseif event == "PLAYER_TARGET_CHANGED" or event == "ARENA_PREP_OPPONENT_SPECIALIZATIONS" or event == "ARENA_OPPONENT_UPDATE" or event == "UNIT_NAME_UPDATE" then
-    self:RefreshEnemyNameplateOverlays()
+    if not InCombatLockdown() then
+      self:RefreshEnemyNameplateOverlays()
+    end
   end
 
   if event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" or event == "ARENA_PREP_OPPONENT_SPECIALIZATIONS" or event == "ARENA_OPPONENT_UPDATE" then
     self:QueueArenaRefreshes()
-    C_Timer.After(0.15, function() if SFA and SFA.db then SFA:RefreshQuestIndicators(); SFA:RefreshEnemyNameplateOverlays() end end)
+    C_Timer.After(0.15, function()
+      if SFA and SFA.db then
+        SFA:RefreshQuestIndicators()
+        if not InCombatLockdown() then
+          SFA:RefreshEnemyNameplateOverlays()
+        end
+      end
+    end)
   else
     self:QueueRefresh()
   end
