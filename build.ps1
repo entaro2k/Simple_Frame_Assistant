@@ -39,6 +39,11 @@ try {
         Copy-Item $_.FullName -Destination $tempFolder
     }
 
+    # Copy .md files
+    Get-ChildItem -Path $sourcePath -Filter *.md | ForEach-Object {
+        Copy-Item $_.FullName -Destination $tempFolder
+    }
+	
     # Copy Icon.tga
     $iconPath = Join-Path $sourcePath "Icon.tga"
     if (Test-Path $iconPath) {
