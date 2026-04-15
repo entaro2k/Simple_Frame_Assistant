@@ -1,93 +1,99 @@
+
 # Simple Frame Assistant (SFA)
 
-**Lightweight PvP & PvE addon focused on clarity, fast reactions, and clean combat visuals.**
+Lightweight PvP / PvE helper addon for World of Warcraft  
+Focused on clarity, speed, and minimal UI clutter.
 
 ---
 
 ## ✨ Features
 
 ### 🟢 Friendly Frames
-- Smart context-based behavior:
-  - Solo → shows only player  
-  - Party / Dungeon → up to 5 players  
-  - Raid → supports 10 / 25+ players with auto scaling  
-- Context-based layouts (separate positions for World, Arena, Dungeon, Raid)
-- Click-cast support (Left / Right / Middle click)
-- Buff & debuff tracking
-- Optional class-colored health bars
-- Option to hide Blizzard raid frames
-- Auto-adjusts size in large groups
+- Solo → shows only player
+- Party → shows player + party members
+- Click-cast macros (Left / Right / Middle)
+- Buff / debuff display
+- Optional class color health bar
 
 ---
 
 ### 🔴 Enemy Frames
-- Clean and minimal enemy tracking
-- Arena-aware vs World (target only)
-- Clear target highlighting
-- Click-cast support for CC abilities
-- Optimized for fast readability
+- Clean enemy tracking
+- Target highlighting
+- Click-cast support (Cyclone, Roots, etc.)
+- Visual clarity in combat
 
 ---
 
 ### 🎯 Nameplate Enhancements
 
 #### ❌ Target Marker
-- Bold red "X" above current target
+- Red **X above nameplate** for current target
+- Highly visible in BG / Arena chaos
 
 #### ❗ Quest Indicator
-- Yellow "!" above quest NPCs
+- Yellow **! above NPCs** involved in quests
+- Automatically detected via tooltip
 
 ---
 
 ### ⚔️ Simulation Mode
-- Configure layouts without combat
+- Test UI without combat
 - Modes:
+  - Arena 3v3
   - World
-  - Arena (3v3)
-  - Dungeon / Party
-  - Raid 10
-  - Raid 25
-
-**Simulation directly configures real layouts**
-
----
-
-### 🧠 Smart Layout System
-- Separate positions per context:
-  - World
-  - Arena
   - Dungeon
-  - Raid 10
-  - Raid 25
-- Move frames with **Shift + Drag**
-- Positions saved automatically
+- Simulates:
+  - roles (healer / dps / tank)
+  - buffs & debuffs
+  - real layout behavior
 
 ---
 
-### ⚙️ Performance
-- Combat-safe (no taint issues)
-- Optimized for large groups
-- Lightweight
+### ⚙️ Options Menu
+Available in:
+ESC → Options → AddOns → Simple Frame Assistant
+
+Submenus:
+- General
+- Friendly Frame
+- Enemy Frame
+- Other
+- Simulation
+
+---
+
+## 🎮 Commands
+
+/sfa → open settings
 
 ---
 
 ## 📦 Installation
 
 1. Download the addon
-2. Extract folder into:
+2. Extract folder:
+   Simple_Frame_Assistant
+3. Place into:
    World of Warcraft/_retail_/Interface/AddOns/
-3. Restart the game or type:
-   /reload
+
+Final structure:
+AddOns/
+ └── Simple_Frame_Assistant/
+
+4. Start game and /reload
 
 ---
 
-## 🎮 Usage
+## 🧠 Philosophy
 
-- Unlock frames in settings
-- Move using **Shift + Drag**
-- Use Simulation to configure layouts safely
+- Minimalist
+- Combat-focused
+- No unnecessary UI clutter
+- Fast readability
 
 ---
 
 ## 👤 Author
+
 En Taro + ChatGPT

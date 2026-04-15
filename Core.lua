@@ -903,24 +903,7 @@ function SFA:IsFriendlyAuraAllowed(aura, group)
     return true
   end
 
-  if not aura then
-    return false
-  end
-
-  if aura.isHarmful then
-    return true
-  end
-
-  local sourceUnit = aura.sourceUnit
-  if sourceUnit == "player" or sourceUnit == "pet" or sourceUnit == "vehicle" then
-    return true
-  end
-
-  if aura.isFromPlayerOrPlayerPet == true then
-    return true
-  end
-
-  return false
+  return aura ~= nil
 end
 
 
@@ -1236,8 +1219,13 @@ function SFA:UpdateAuraIcons(frame, group)
   end
 
   if group == "friendly" then
+    local helpfulFilter = "HELPFUL"
+    if self.db and self.db.friendly and self.db.friendly.showMyHotsOnly then
+      helpfulFilter = "HELPFUL|PLAYER"
+    end
+
     for i = 1, 16 do
-      local aura = C_UnitAuras.GetAuraDataByIndex(frame.unit, i, "HELPFUL")
+      local aura = C_UnitAuras.GetAuraDataByIndex(frame.unit, i, helpfulFilter)
       if not aura then break end
       local spellID = aura.spellId or aura.spellID
       local texture = aura.icon or aura.iconFileID
@@ -2202,13 +2190,14 @@ end
 
 
 
+
 function SFA:UpdateMinimapButtonPosition()
   if not self.minimapButton or not Minimap then return end
   local db = self.db and self.db.minimap
   if not db then return end
 
   local angle = math.rad(tonumber(db.angle) or 220)
-  local radius = 112
+  local radius = 104
   local x = math.cos(angle) * radius
   local y = math.sin(angle) * radius
 
@@ -2220,10 +2209,17 @@ end
 function SFA:CreateMinimapButton()
   if self.minimapButton or not Minimap then return end
 
+  self.db.minimap = self.db.minimap or {}
+  if self.db.minimap.enabled == nil then
+    self.db.minimap.enabled = true
+  end
+  if self.db.minimap.angle == nil then
+    self.db.minimap.angle = 220
+  end
+
   local button = CreateFrame("Button", addonName .. "MinimapButton", Minimap)
   button:SetSize(32, 32)
   button:SetFrameStrata("MEDIUM")
-  button:SetMovable(true)
   button:EnableMouse(true)
   button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
   button:RegisterForDrag("LeftButton")
@@ -2240,6 +2236,20 @@ function SFA:CreateMinimapButton()
   overlay:SetPoint("TOPLEFT")
   button.overlay = overlay
 
+  local function updateAngleFromCursor()
+    if not Minimap then return end
+    local mx, my = Minimap:GetCenter()
+    local px, py = GetCursorPosition()
+    local scale = UIParent:GetEffectiveScale() or UIParent:GetScale() or 1
+    px, py = px / scale, py / scale
+    local angle = math.deg(math.atan2(py - my, px - mx))
+    if angle < 0 then
+      angle = angle + 360
+    end
+    SFA.db.minimap.angle = angle
+    SFA:UpdateMinimapButtonPosition()
+  end
+
   button:SetScript("OnClick", function(_, btn)
     if btn == "RightButton" then
       if SFA and SFA.ToggleOptions then
@@ -2255,45 +2265,22 @@ function SFA:CreateMinimapButton()
   button:SetScript("OnDragStart", function(self)
     if InCombatLockdown() then return end
     self.dragging = true
+    updateAngleFromCursor()
   end)
 
   button:SetScript("OnDragStop", function(self)
+    if not self.dragging then return end
     self.dragging = false
+    updateAngleFromCursor()
   end)
 
   button:SetScript("OnUpdate", function(self)
-    if not self.dragging or not Minimap then return end
-    local mx, my = Minimap:GetCenter()
-    local px, py = GetCursorPosition()
-    local scale = UIParent:GetScale()
-    px, py = px / scale, py / scale
-    local angle = math.deg(math.atan2(py - my, px - mx))
-    SFA.db.minimap.angle = angle
-    SFA:UpdateMinimapButtonPosition()
+    if not self.dragging then return end
+    updateAngleFromCursor()
   end)
 
   self.minimapButton = button
   self:UpdateMinimapButtonPosition()
-end
-
-
-
-function SFA:RefreshSimulationPositionInputs()
-  if not self.options then return end
-
-  local function sync(mode, xRef, yRef)
-    local point = self:GetFriendlyScenarioPoint(mode)
-    if point then
-      if xRef then xRef:SetText(tostring(point.x or 0)) end
-      if yRef then yRef:SetText(tostring(point.y or 0)) end
-    end
-  end
-
-  sync("world", self.options.simRowWorldX, self.options.simRowWorldY)
-  sync("arena3v3", self.options.simRowArenaX, self.options.simRowArenaY)
-  sync("dungeon", self.options.simRowDungeonX, self.options.simRowDungeonY)
-  sync("raid10", self.options.simRowRaid10X, self.options.simRowRaid10Y)
-  sync("raid25", self.options.simRowRaid25X, self.options.simRowRaid25Y)
 end
 
 function SFA:OnEvent(event, ...)
