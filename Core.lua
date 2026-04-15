@@ -111,9 +111,7 @@ function SFA:BuildSimulationProfile(scenario)
 
   if scenario == "arena3v3" then
     local fh = SFA_SimPick(self.simulationClassPools.healers, 1, math.random(0, 5)) or "PRIEST"
-    local fd = SFA_SimPick(self.simulationClassPools.dpsTanks, 2, math.random(0, 11)) or "ROGUE"
     local eh = SFA_SimPick(self.simulationClassPools.healers, 3, math.random(0, 5)) or "MONK"
-    local ed1 = SFA_SimPick(self.simulationClassPools.dpsTanks, 4, math.random(0, 11)) or "MAGE"
     local ed2 = SFA_SimPick(self.simulationClassPools.dpsTanks, 5, math.random(0, 11)) or "WARRIOR"
     profile.friendly = {
       SFA_SimBuildEntry("You", "DRUID", 0.82, false, false),
@@ -133,16 +131,49 @@ function SFA:BuildSimulationProfile(scenario)
     local d3 = SFA_SimPick(self.simulationClassPools.dpsTanks, 5, math.random(0, 11)) or "WARLOCK"
     profile.friendly = {
       SFA_SimBuildEntry("You", "DRUID", 0.91, false, false),
-      SFA_SimBuildEntry("Tank", tank, 0.48, false, false),
+      SFA_SimBuildEntry("Tank", tank, 0.48, false, false, true),
       SFA_SimBuildEntry("Healer", healer, 0.79, true, false),
       SFA_SimBuildEntry("DPS 1", d1, 0.95, false, false),
       SFA_SimBuildEntry("DPS 2", d2, 0.67, false, false),
     }
-    profile.enemy = { SFA_SimBuildEntry("Dungeon Enemy", d3, 0.61, false, true) }
+    profile.enemy = {
+      SFA_SimBuildEntry("Dungeon Enemy", d3, 0.61, false, true)
+    }
+  elseif scenario == "raid10" or scenario == "raid25" then
+    local total = scenario == "raid25" and 25 or 10
+    for i = 1, total do
+      local classFile
+      local healer = false
+      local tank = false
+
+      if i == 1 then
+        classFile = "DRUID"
+      elseif (i % 5) == 2 then
+        classFile = SFA_SimPick(self.simulationClassPools.healers, i, i) or "PRIEST"
+        healer = true
+      elseif (i % 5) == 3 then
+        classFile = "WARRIOR"
+        tank = true
+      else
+        classFile = SFA_SimPick(self.simulationClassPools.dpsTanks, i, i) or "MAGE"
+      end
+
+      local hp = 0.55 + ((i % 5) * 0.08)
+      local name = i == 1 and "You" or ("Raid " .. i)
+      profile.friendly[#profile.friendly + 1] = SFA_SimBuildEntry(name, classFile, hp, healer, false, tank)
+    end
+
+    profile.enemy = {
+      SFA_SimBuildEntry("Raid Target", "WARRIOR", 0.62, false, true, true),
+    }
   else
     local enemy = SFA_SimPick(self.simulationClassPools.dpsTanks, 6, math.random(0, 11)) or "ROGUE"
-    profile.friendly = { SFA_SimBuildEntry("You", "DRUID", 0.93, false, false) }
-    profile.enemy = { SFA_SimBuildEntry("World Target", enemy, 0.44, false, true) }
+    profile.friendly = {
+      SFA_SimBuildEntry("You", "DRUID", 0.93, false, false)
+    }
+    profile.enemy = {
+      SFA_SimBuildEntry("World Target", enemy, 0.44, false, true)
+    }
   end
 
   return profile
@@ -178,6 +209,7 @@ function SFA:SetSimulationEnabled(enabled)
   if not InCombatLockdown() then
     self:RefreshGroup("friendly")
     self:RefreshGroup("enemy")
+    if self.RefreshOptionsPanel then self:RefreshOptionsPanel() end
   else
     self:QueueRefresh(0.05)
   end
@@ -192,6 +224,7 @@ function SFA:GetSimulationData(unit)
   if not self:IsSimulationUnit(unit) then return nil end
   local group, index = unit:match("^sfa_sim_(friendly|enemy)_(%d+)$")
   index = tonumber(index)
+  if not group or not index then return nil end
   local profile = self:GetSimulationProfile()
   return profile and profile[group] and profile[group][index] or nil
 end
@@ -284,6 +317,253 @@ function SFA:RefreshQuestIndicators()
     elseif frame.SFAQuestIcon then
       frame.SFAQuestIcon:Hide()
     end
+  end
+end
+
+
+
+
+
+
+
+function SFA:GetFriendlyScenarioKeyForMode(mode)
+  mode = mode or "world"
+  if mode == "arena3v3" then
+    return "arena"
+  elseif mode == "raid10" then
+    return "raid10"
+  elseif mode == "raid25" then
+    return "raid25"
+  elseif mode == "dungeon" then
+    return "dungeon"
+  else
+    return "world"
+  end
+end
+
+
+function SFA:GetFriendlyContextKeyForSimulationScenario()
+  return self:GetFriendlyScenarioKeyForMode(self:GetSimulationScenario())
+end
+
+function SFA:GetFriendlyScenarioPoint(mode)
+  local cfg = self.db and self.db.friendly
+  if not cfg then return nil end
+  cfg.scenarioPoints = cfg.scenarioPoints or {}
+  local key = self:GetFriendlyScenarioKeyForMode(mode)
+  if type(cfg.scenarioPoints[key]) ~= "table" then
+    local base = cfg.point or { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 }
+    cfg.scenarioPoints[key] = {
+      anchor = base.anchor or "CENTER",
+      relativeTo = "UIParent",
+      relativePoint = base.relativePoint or "CENTER",
+      x = base.x or 0,
+      y = base.y or 0,
+    }
+  end
+  return cfg.scenarioPoints[key], key
+end
+
+function SFA:SetFriendlyScenarioPoint(mode, x, y, anchor, relativePoint)
+  local point, key = self:GetFriendlyScenarioPoint(mode)
+  if not point then return false end
+  point.anchor = anchor or point.anchor or "CENTER"
+  point.relativeTo = "UIParent"
+  point.relativePoint = relativePoint or point.relativePoint or "CENTER"
+  point.x = tonumber(x) or 0
+  point.y = tonumber(y) or 0
+  return true
+end
+
+function SFA:GetFriendlyContextKeyForSimulationScenario()
+  local scenario = self:GetSimulationScenario()
+  if scenario == "raid10" then
+    return "raid10"
+  elseif scenario == "raid25" then
+    return "raid25"
+  else
+    return "smallGroup"
+  end
+end
+
+
+function SFA:SaveCurrentFriendlyPositionForSimulation()
+  local header = self.headers and self.headers.friendly
+  if not header then return false end
+
+  local p, _, rp, x, y = header:GetPoint(1)
+  if not p then return false end
+
+  local key = self:GetFriendlyScenarioKeyForMode(self:GetSimulationScenario())
+  local point = {
+    anchor = p,
+    relativeTo = "UIParent",
+    relativePoint = rp,
+    x = math.floor(x + 0.5),
+    y = math.floor(y + 0.5),
+  }
+
+  self:SetLastContextPoint("friendly", key, point)
+
+  self.db.friendly.point = self.db.friendly.point or {}
+  self.db.friendly.point.anchor = point.anchor
+  self.db.friendly.point.relativeTo = point.relativeTo
+  self.db.friendly.point.relativePoint = point.relativePoint
+  self.db.friendly.point.x = point.x
+  self.db.friendly.point.y = point.y
+
+  if not InCombatLockdown() then
+    self:ApplyLayout("friendly")
+    self:RefreshGroup("friendly")
+    self:RefreshOptionsPanel()
+  else
+    self.pendingLayout = true
+  end
+  return true
+end
+
+function SFA:GetFriendlyCountBasedContextKey()
+  local count = 1
+
+  if self.GetSimulationEnabled and self:GetSimulationEnabled() then
+    local profile = self:GetSimulationProfile() or {}
+    count = #(profile.friendly or {})
+  else
+    local units = self:GetDisplayedUnits("friendly") or {}
+    count = #units
+  end
+
+  if count >= 25 then
+    return "raid25"
+  elseif count >= 10 then
+    return "raid10"
+  else
+    return "smallGroup"
+  end
+end
+
+
+function SFA:GetCurrentLayoutContextKey(group)
+  if group == "enemy" then
+    return "default"
+  end
+
+  if group == "friendly" and self.IsSimulationEnabled and self:IsSimulationEnabled() then
+    return self:GetFriendlyScenarioKeyForMode(self:GetSimulationScenario())
+  end
+
+  local raidUnits = self.GetFriendlyRaidUnits and self:GetFriendlyRaidUnits() or {}
+  local count = #raidUnits
+  if count >= 25 then
+    return "raid25"
+  elseif count >= 10 then
+    return "raid10"
+  end
+
+  if self.IsInArenaContext and self:IsInArenaContext() then
+    return "arena"
+  end
+
+  local inGroup = false
+  if IsInGroup then
+    local ok, result = pcall(IsInGroup)
+    inGroup = ok and result or false
+  end
+
+  if inGroup then
+    local partyCount = 1
+    if GetNumSubgroupMembers then
+      local ok, result = pcall(GetNumSubgroupMembers)
+      if ok and type(result) == "number" then
+        partyCount = math.max(1, result + 1)
+      end
+    end
+    if partyCount > 1 then
+      return "dungeon"
+    end
+  end
+
+  return "world"
+end
+
+function SFA:EnsureScenarioPoints(group)
+  local cfg = self.db and self.db[group]
+  if not cfg then return nil end
+  cfg.scenarioPoints = cfg.scenarioPoints or {}
+  local base = cfg.point or { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = 0, y = 0 }
+
+  local function clonePoint(src)
+    return {
+      anchor = src.anchor or "CENTER",
+      relativeTo = "UIParent",
+      relativePoint = src.relativePoint or "CENTER",
+      x = src.x or 0,
+      y = src.y or 0,
+    }
+  end
+
+  if group == "friendly" then
+    if type(cfg.scenarioPoints.smallGroup) ~= "table" then cfg.scenarioPoints.smallGroup = clonePoint(base) end
+    if type(cfg.scenarioPoints.raid10) ~= "table" then cfg.scenarioPoints.raid10 = clonePoint(base) end
+    if type(cfg.scenarioPoints.raid25) ~= "table" then cfg.scenarioPoints.raid25 = clonePoint(base) end
+  else
+    if type(cfg.scenarioPoints.default) ~= "table" then cfg.scenarioPoints.default = clonePoint(base) end
+  end
+
+  return cfg.scenarioPoints
+end
+
+
+function SFA:GetActivePointData(group)
+  local cfg = self.db and self.db[group]
+  if not cfg then return nil end
+  cfg.scenarioPoints = cfg.scenarioPoints or {}
+
+  local key = self:GetCurrentLayoutContextKey(group)
+
+  if group == "friendly" then
+    local point = cfg.scenarioPoints[key]
+    if type(point) ~= "table" then
+      local base = cfg.point or { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 }
+      point = {
+        anchor = base.anchor or "CENTER",
+        relativeTo = "UIParent",
+        relativePoint = base.relativePoint or "CENTER",
+        x = base.x or 0,
+        y = base.y or 0,
+      }
+      cfg.scenarioPoints[key] = point
+    end
+    return point
+  else
+    if type(cfg.scenarioPoints.default) ~= "table" then
+      cfg.scenarioPoints.default = cfg.point or { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = 260, y = -40 }
+    end
+    return cfg.scenarioPoints.default
+  end
+end
+
+
+
+
+function SFA:SetLastContextPoint(group, key, point)
+  local cfg = self.db and self.db[group]
+  if not cfg then return end
+  cfg.scenarioPoints = cfg.scenarioPoints or {}
+
+  local saved = {
+    anchor = point.anchor,
+    relativeTo = "UIParent",
+    relativePoint = point.relativePoint,
+    x = point.x,
+    y = point.y,
+  }
+
+  if group == "friendly" then
+    local mapped = self:GetFriendlyScenarioKeyForMode(key)
+    cfg.scenarioPoints[mapped] = saved
+  else
+    cfg.scenarioPoints.default = saved
   end
 end
 
@@ -457,37 +737,30 @@ function SFA:IsHealerUnit(unit, frame)
   return false, nil
 end
 
-function SFA:ApplyClickBindings(frame, group)
-  if frame.simulationData or self:IsSimulationUnit(frame.unit) then
-    frame:RegisterForClicks("AnyUp")
-    frame:SetAttribute("unit", nil)
-    for i = 1, 5 do
-      frame:SetAttribute("type" .. i, nil)
-      frame:SetAttribute("macrotext" .. i, nil)
-    end
-    return
-  end
-  local clicks = self.db[group].clicks
-  frame:RegisterForClicks("AnyUp")
-  frame:SetAttribute("unit", frame.unit)
-  for button, macroText in pairs(clicks) do
-    local key = button == "LeftButton" and "type1"
-      or button == "RightButton" and "type2"
-      or button == "MiddleButton" and "type3"
-      or button == "Button4" and "type4"
-      or button == "Button5" and "type5"
-    local macroKey = button == "LeftButton" and "macrotext1"
-      or button == "RightButton" and "macrotext2"
-      or button == "MiddleButton" and "macrotext3"
-      or button == "Button4" and "macrotext4"
-      or button == "Button5" and "macrotext5"
 
-    if key and macroKey and macroText and macroText ~= "" then
-      frame:SetAttribute(key, "macro")
-      frame:SetAttribute(macroKey, macroText:gsub("@unit", "@" .. frame.unit))
-    elseif key and macroKey then
-      frame:SetAttribute(key, nil)
-      frame:SetAttribute(macroKey, nil)
+function SFA:ApplyClickBindings(frame, group)
+  if not frame then return end
+
+  local clicks = self.db[group] and self.db[group].clicks
+  if type(clicks) ~= "table" then return end
+
+  local unit = frame.unit
+  local allowedButtons = {
+    LeftButton = { "type1", "macrotext1" },
+    RightButton = { "type2", "macrotext2" },
+    MiddleButton = { "type3", "macrotext3" },
+    Button4 = { "type4", "macrotext4" },
+    Button5 = { "type5", "macrotext5" },
+  }
+
+  for button, keys in pairs(allowedButtons) do
+    local macroText = clicks[button]
+    if macroText and macroText ~= "" and unit then
+      frame:SetAttribute(keys[1], "macro")
+      frame:SetAttribute(keys[2], tostring(macroText):gsub("@unit", "@" .. unit))
+    else
+      frame:SetAttribute(keys[1], nil)
+      frame:SetAttribute(keys[2], nil)
     end
   end
 end
@@ -567,6 +840,148 @@ function SFA:IsReservedArenaEnemySlot(group, unit)
   return idx <= count
 end
 
+
+
+
+
+function SFA:GetFriendlyEffectiveScaleForCount(count)
+  local db = self.db and self.db.friendly
+  if not db then return 1 end
+  local baseScale = db.scale or 1
+
+  if not db.autoShrinkLargeGroups then
+    return baseScale
+  end
+
+  count = tonumber(count) or 1
+  if count > 5 then
+    return tonumber(db.largeGroupScale) or 0.85
+  end
+
+  return baseScale
+end
+
+function SFA:GetFriendlyEffectiveScale()
+  local count = 1
+
+  if self.GetSimulationEnabled and self:GetSimulationEnabled() then
+    local profile = self:GetSimulationProfile() or {}
+    count = #(profile.friendly or {})
+  else
+    if IsInRaid and GetNumGroupMembers then
+      local okRaid, inRaid = pcall(IsInRaid)
+      if okRaid and inRaid then
+        local ok, result = pcall(GetNumGroupMembers)
+        if ok and type(result) == "number" and result > 0 then
+          count = result
+        end
+      elseif GetNumSubgroupMembers then
+        local ok, result = pcall(GetNumSubgroupMembers)
+        if ok and type(result) == "number" then
+          count = math.max(1, result + 1)
+        end
+      end
+    elseif GetNumSubgroupMembers then
+      local ok, result = pcall(GetNumSubgroupMembers)
+      if ok and type(result) == "number" then
+        count = math.max(1, result + 1)
+      end
+    end
+  end
+
+  return self:GetFriendlyEffectiveScaleForCount(count)
+end
+
+
+function SFA:IsFriendlyAuraAllowed(aura, group)
+  if group ~= "friendly" then
+    return true
+  end
+
+  local db = self.db and self.db.friendly
+  if not (db and db.showMyHotsOnly) then
+    return true
+  end
+
+  if not aura then
+    return false
+  end
+
+  if aura.isHarmful then
+    return true
+  end
+
+  local sourceUnit = aura.sourceUnit
+  if sourceUnit == "player" or sourceUnit == "pet" or sourceUnit == "vehicle" then
+    return true
+  end
+
+  if aura.isFromPlayerOrPlayerPet == true then
+    return true
+  end
+
+  return false
+end
+
+
+
+function SFA:GetFriendlyRaidUnits()
+  local units = {}
+  if not IsInRaid or not GetNumGroupMembers or not GetRaidRosterInfo then
+    return units
+  end
+
+  local okRaid, inRaid = pcall(IsInRaid)
+  if not okRaid or not inRaid then
+    return units
+  end
+
+  local okCount, count = pcall(GetNumGroupMembers)
+  if not okCount or type(count) ~= "number" or count <= 0 then
+    return units
+  end
+
+  local entries = {}
+  for i = 1, count do
+    local unit = "raid" .. i
+    local exists = false
+    if UnitExists then
+      local ok, result = pcall(UnitExists, unit)
+      exists = ok and result or false
+    end
+    if exists then
+      local name, rank, subgroup = GetRaidRosterInfo(i)
+      entries[#entries + 1] = {
+        unit = unit,
+        subgroup = tonumber(subgroup) or 99,
+        name = name or unit,
+      }
+    end
+  end
+
+  table.sort(entries, function(a, b)
+    if a.subgroup ~= b.subgroup then
+      return a.subgroup < b.subgroup
+    end
+    return tostring(a.name) < tostring(b.name)
+  end)
+
+  for _, entry in ipairs(entries) do
+    units[#units + 1] = entry.unit
+  end
+
+  return units
+end
+
+function SFA:GetFriendlyLayoutMetrics(visibleCount)
+  visibleCount = math.max(tonumber(visibleCount) or 0, 1)
+  if visibleCount <= 5 then
+    return 1, visibleCount
+  end
+  local columns = math.ceil(visibleCount / 5)
+  return columns, 5
+end
+
 function SFA:GetDisplayedUnits(group)
   if self.GetSimulationEnabled and self:GetSimulationEnabled() then
     local scenario = (self.db and self.db.simulation and self.db.simulation.scenario) or "arena3v3"
@@ -582,6 +997,22 @@ function SFA:GetDisplayedUnits(group)
       else
         return { "sfa_sim_enemy_1" }
       end
+    elseif scenario == "raid10" then
+      if group == "friendly" then
+        local units = {}
+        for i = 1, 10 do units[#units + 1] = "sfa_sim_friendly_" .. i end
+        return units
+      else
+        return { "sfa_sim_enemy_1" }
+      end
+    elseif scenario == "raid25" then
+      if group == "friendly" then
+        local units = {}
+        for i = 1, 25 do units[#units + 1] = "sfa_sim_friendly_" .. i end
+        return units
+      else
+        return { "sfa_sim_enemy_1" }
+      end
     else
       if group == "friendly" then
         return { "sfa_sim_friendly_1" }
@@ -594,6 +1025,11 @@ function SFA:GetDisplayedUnits(group)
   local units = {}
 
   if group == "friendly" then
+    local raidUnits = self:GetFriendlyRaidUnits()
+    if #raidUnits > 0 then
+      return raidUnits
+    end
+
     table.insert(units, "player")
 
     local inGroup = false
@@ -805,7 +1241,7 @@ function SFA:UpdateAuraIcons(frame, group)
       if not aura then break end
       local spellID = aura.spellId or aura.spellID
       local texture = aura.icon or aura.iconFileID
-      if texture and not self:IsBlacklistedBuff(spellID) then
+      if texture and self:IsFriendlyAuraAllowed(aura, group) and not self:IsBlacklistedBuff(spellID) then
         if not addBuff(texture, spellID) then break end
       end
     end
@@ -853,6 +1289,9 @@ function SFA:UpdateTargetHighlight(frame, group)
     frame.targetBorder:Hide()
   end
 end
+
+
+
 
 
 
@@ -912,6 +1351,7 @@ function SFA:UpdateFrameDataOnly(frame, group)
     frame.health:SetValue(0)
     frame.name:SetText(frame.lastKnownName or ("Enemy " .. tostring(unit):gsub("arena", "")))
     frame.health:SetStatusBarColor(0.35, 0.35, 0.35, 0.58)
+    frame:SetAlpha(1)
     frame.value:SetText("")
     frame.role:SetText("")
     if frame.roleIcon then frame.roleIcon:Hide() end
@@ -981,6 +1421,7 @@ function SFA:UpdateFrameDataOnly(frame, group)
   self:UpdateAuraIcons(frame, group)
   self:UpdateTargetXMark(frame, group)
   self:UpdateTargetHighlight(frame, group)
+  frame:SetAlpha(1)
 end
 
 function SFA:UpdateFrameVisual(frame, group)
@@ -1085,7 +1526,12 @@ function SFA:UpdateFrameVisual(frame, group)
     local c = RAID_CLASS_COLORS[classFile]
     r, g, b = c.r, c.g, c.b
   elseif group == "friendly" then
-    r, g, b = 0.1, 0.75, 0.25
+    if self.db.friendly and self.db.friendly.classColor and classFile and RAID_CLASS_COLORS[classFile] then
+      local c = RAID_CLASS_COLORS[classFile]
+      r, g, b = c.r, c.g, c.b
+    else
+      r, g, b = 0.1, 0.75, 0.25
+    end
   end
 
   if not UnitIsConnected(unit) or UnitIsDeadOrGhost(unit) then
@@ -1129,11 +1575,65 @@ end
 
 
 
+
+
+
+
+function SFA:ShouldThrottleFriendlyRefresh()
+  if not self or not self.db or not self.db.friendly then
+    return false
+  end
+
+  if self:IsSimulationEnabled() then
+    return false
+  end
+
+  local units = self:GetDisplayedUnits("friendly")
+  return #units > 10
+end
+
+function SFA:CanRunFriendlyRefreshNow()
+  if not self:ShouldThrottleFriendlyRefresh() then
+    return true
+  end
+
+  self.session = self.session or {}
+  local now = GetTime and GetTime() or 0
+  local last = self.session.lastFriendlyRefresh or 0
+  local minInterval = 0.18
+
+  if (now - last) >= minInterval then
+    self.session.lastFriendlyRefresh = now
+    return true
+  end
+
+  return false
+end
+
+function SFA:GetFriendlyVisibleUnitCount()
+  local units = self:GetDisplayedUnits("friendly")
+  return #units
+end
+
+function SFA:FlushPendingStructuralUpdates()
+  local hadPending = self.pendingLayout or self.pendingVisibility or self.pendingRefresh
+  self.pendingLayout = false
+  self.pendingVisibility = false
+  self.pendingRefresh = false
+  if not hadPending then return end
+  if not self.db then return end
+  self:RefreshGroup("friendly")
+  self:RefreshGroup("enemy")
+  self:RefreshEnemyNameplateOverlays()
+end
+
+
 function SFA:RefreshGroup(group)
   local cfg = self.db[group]
+  local inCombat = InCombatLockdown()
 
   if not cfg.enabled then
-    if InCombatLockdown() then
+    if inCombat then
       self.pendingVisibility = true
       return
     end
@@ -1141,40 +1641,45 @@ function SFA:RefreshGroup(group)
     for _, frame in ipairs(self.frames[group]) do
       frame.simulationData = nil
       frame.unit = nil
+      frame:SetAlpha(1)
       frame:Hide()
     end
     return
   end
 
   if self:IsSimulationEnabled() then
-    if InCombatLockdown() then
+    local header = self.headers[group]
+    local profile = self:GetSimulationProfile() or {}
+    local entries = (profile[group] or {})
+
+    if inCombat then
       self.pendingVisibility = true
-      for _, frame in ipairs(self.frames[group]) do
-        if frame.simulationData then
+      for i, frame in ipairs(self.frames[group]) do
+        local sim = entries[i]
+        frame.simulationData = sim
+        frame.unit = nil
+        if sim then
           self:UpdateFrameDataOnly(frame, group)
         end
       end
       return
     end
 
-    local header = self.headers[group]
-    local profile = self:GetSimulationProfile() or {}
-    local entries = (profile[group] or {})
     if header then
-      header:SetScale(cfg.scale)
+      header:SetScale(group == "friendly" and self:GetFriendlyEffectiveScaleForCount(#entries) or cfg.scale)
       header:SetShown(#entries > 0)
       if header.label then header.label:SetShown(not self.db.hideHeaders) end
     end
+
     for i, frame in ipairs(self.frames[group]) do
       local sim = entries[i]
       frame.unit = nil
       frame.simulationData = sim
       if sim then
-        if not InCombatLockdown() then
-          self:ApplyClickBindings(frame, group)
-        end
+        self:ApplyClickBindings(frame, group)
         self:UpdateFrameVisual(frame, group)
       else
+        frame:SetAlpha(1)
         frame:Hide()
       end
     end
@@ -1183,26 +1688,31 @@ function SFA:RefreshGroup(group)
   end
 
   local header = self.headers[group]
-
-  for _, frame in ipairs(self.frames[group]) do
-    frame.simulationData = nil
-  end
-
   local units = self:GetDisplayedUnits(group)
   local activeCount = #units
 
-  if InCombatLockdown() then
+  if inCombat then
     self.pendingVisibility = true
+    -- only update data for frames that already have assigned units or reserved arena slots
     for i, frame in ipairs(self.frames[group]) do
-      if frame.unit or self:IsReservedArenaEnemySlot(group, frame.unit) then
+      local keepUnit = frame.unit
+      local nextUnit = units[i]
+      if keepUnit then
+        self:UpdateFrameDataOnly(frame, group)
+      elseif nextUnit and self.IsReservedArenaEnemySlot and self:IsReservedArenaEnemySlot(group, nextUnit) then
+        frame.unit = nextUnit
         self:UpdateFrameDataOnly(frame, group)
       end
     end
     return
   end
 
+  for _, frame in ipairs(self.frames[group]) do
+    frame.simulationData = nil
+  end
+
   if header then
-    header:SetScale(cfg.scale)
+    header:SetScale(group == "friendly" and self:GetFriendlyEffectiveScaleForCount(activeCount) or cfg.scale)
     header:SetShown(activeCount > 0)
     if header.label then header.label:SetShown(not self.db.hideHeaders) end
   end
@@ -1211,12 +1721,11 @@ function SFA:RefreshGroup(group)
     local unit = units[i]
     frame.unit = unit
     if unit then
-      if not InCombatLockdown() then
-        self:ApplyClickBindings(frame, group)
-      end
+      self:ApplyClickBindings(frame, group)
       self:UpdateFrameVisual(frame, group)
     else
       frame.unit = nil
+      frame:SetAlpha(1)
       frame:Hide()
     end
   end
@@ -1224,13 +1733,48 @@ function SFA:RefreshGroup(group)
   self:ApplyLayout(group)
 end
 
+
 function SFA:QueueRefresh(delay)
   if self.pendingRefresh then return end
   self.pendingRefresh = true
-  C_Timer.After(delay or 0.08, function()
+
+  local actualDelay = delay or 0.08
+  if self:ShouldThrottleFriendlyRefresh() then
+    actualDelay = math.max(actualDelay, 0.15)
+  end
+
+  C_Timer.After(actualDelay, function()
+    if not self.db then
+      self.pendingRefresh = false
+      return
+    end
+
+    if InCombatLockdown() then
+      self.pendingLayout = true
+      self.pendingVisibility = true
+      self.pendingRefresh = false
+      return
+    end
+
     self.pendingRefresh = false
-    if not self.db then return end
-    self:RefreshGroup("friendly")
+
+    if self:CanRunFriendlyRefreshNow() then
+      self:RefreshGroup("friendly")
+    else
+      self.pendingRefresh = true
+      C_Timer.After(0.10, function()
+        if SFA and SFA.db then
+          SFA.pendingRefresh = false
+          if not InCombatLockdown() then
+            SFA:RefreshGroup("friendly")
+          else
+            SFA.pendingLayout = true
+            SFA.pendingVisibility = true
+          end
+        end
+      end)
+    end
+
     self:RefreshGroup("enemy")
   end)
 end
@@ -1253,25 +1797,59 @@ end
 
 local function StartMoving(header, group)
   if SFA.db.locked or InCombatLockdown() then return end
+  if IsShiftKeyDown and not IsShiftKeyDown() then return end
   header:StartMoving()
   header.isMoving = true
   header.group = group
 end
 
+
 local function StopMoving(header)
   if not header.isMoving then return end
   header:StopMovingOrSizing()
   header.isMoving = false
+
   local p, _, rp, x, y = header:GetPoint(1)
-  local cfg = SFA.db[header.group].point
-  cfg.anchor, cfg.relativeTo, cfg.relativePoint, cfg.x, cfg.y = p, "UIParent", rp, math.floor(x + 0.5), math.floor(y + 0.5)
+  local cfg = SFA.db[header.group]
+  local key = SFA:GetCurrentLayoutContextKey(header.group)
+
+  local point = {
+    anchor = p,
+    relativeTo = "UIParent",
+    relativePoint = rp,
+    x = math.floor(x + 0.5),
+    y = math.floor(y + 0.5),
+  }
+
+  SFA:SetLastContextPoint(header.group, key, point)
+
+  cfg.point = cfg.point or {}
+  cfg.point.anchor = point.anchor
+  cfg.point.relativeTo = point.relativeTo
+  cfg.point.relativePoint = point.relativePoint
+  cfg.point.x = point.x
+  cfg.point.y = point.y
+
+  if header.group == "friendly" then
+    cfg.scenarioPoints = cfg.scenarioPoints or {}
+    cfg.scenarioPoints[key] = {
+      anchor = point.anchor,
+      relativeTo = "UIParent",
+      relativePoint = point.relativePoint,
+      x = point.x,
+      y = point.y,
+    }
+  end
+
   SFA:QueueRefresh()
+  if SFA.RefreshOptionsPanel then SFA:RefreshOptionsPanel() end
 end
 
 function SFA:CreateUnitFrame(parent, unit, group, index)
   local cfg = self.db[group]
   local frame = CreateFrame("Button", addonName .. group .. index, parent, "SecureUnitButtonTemplate")
   frame.unit = unit
+  frame:RegisterForClicks("LeftButtonUp", "RightButtonUp", "MiddleButtonUp", "Button4Up", "Button5Up")
   frame:SetSize(cfg.width, cfg.height)
   if index == 1 then
     frame:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, 0)
@@ -1279,6 +1857,16 @@ function SFA:CreateUnitFrame(parent, unit, group, index)
     frame:SetPoint("TOPLEFT", self.frames[group][index - 1], "BOTTOMLEFT", 0, -cfg.spacing)
   end
   SetBackdropBasic(frame)
+  frame:SetScript("OnMouseDown", function(self, button)
+    if not SFA.db.locked and button == "LeftButton" and IsShiftKeyDown and IsShiftKeyDown() then
+      StartMoving(parent, group)
+    end
+  end)
+  frame:SetScript("OnMouseUp", function(self, button)
+    if parent and parent.isMoving then
+      StopMoving(parent)
+    end
+  end)
   frame:SetFrameStrata("MEDIUM")
 
   frame.targetBorder = CreateFrame("Frame", nil, frame)
@@ -1385,10 +1973,11 @@ function SFA:CreateHeader(group)
   header:SetClampedToScreen(true)
   header:SetScript("OnDragStart", function(self) StartMoving(self, group) end)
   header:SetScript("OnDragStop", StopMoving)
-  SafePoint(header, cfg.point)
+  local pointData = self:GetActivePointData(group) or cfg.point
+  SafePoint(header, pointData)
 
-  local count = #cfg.units
-  header:SetSize(cfg.width, (cfg.height * count) + ((count - 1) * cfg.spacing) + 20)
+  local count = group == "friendly" and 40 or #cfg.units
+  header:SetSize(cfg.width, (cfg.height * math.max(count, 1)) + ((math.max(count, 1) - 1) * cfg.spacing) + 20)
 
   header.label = header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
   header.label:SetPoint("BOTTOM", header, "TOP", 0, 4)
@@ -1397,8 +1986,12 @@ function SFA:CreateHeader(group)
 
   self.headers[group] = header
 
-  for i, unit in ipairs(cfg.units) do
+  for i = 1, count do
+    local unit = cfg.units[i]
     self.frames[group][i] = self:CreateUnitFrame(header, unit, group, i)
+    if unit and not InCombatLockdown() then
+      self:ApplyClickBindings(self.frames[group][i], group)
+    end
   end
 end
 
@@ -1434,30 +2027,60 @@ function SFA:ApplyLayout(group)
     self.pendingLayout = true
     return
   end
+
   local cfg = self.db[group]
   local header = self.headers[group]
   if not header then return end
-  SafePoint(header, cfg.point)
-  header:SetScale(cfg.scale)
-  if header.label then header.label:SetShown(not self.db.hideHeaders) end
 
   local units = self:GetDisplayedUnits(group)
   local visibleCount = math.max(self:IsSimulationEnabled() and #((self:GetSimulationProfile() or {})[group] or {}) or #units, 1)
-  header:SetSize(cfg.width, (cfg.height * visibleCount) + ((visibleCount - 1) * cfg.spacing) + 20)
+  local effectiveScale = group == "friendly" and self:GetFriendlyEffectiveScaleForCount(visibleCount) or cfg.scale
+  local activeKey = self:GetCurrentLayoutContextKey(group)
+  local pointData = self:GetActivePointData(group) or cfg.point
+  SafePoint(header, pointData)
+  header:SetScale(effectiveScale)
+  if header.label then header.label:SetShown(not self.db.hideHeaders) end
 
-  local lastVisible
+  local columnGap = cfg.spacing + 10
+  local columns, rows = 1, visibleCount
+  if group == "friendly" then
+    columns, rows = self:GetFriendlyLayoutMetrics(visibleCount)
+  end
+
+  local totalWidth = (cfg.width * columns) + (columnGap * math.max(columns - 1, 0))
+  local totalHeight = (cfg.height * rows) + ((rows - 1) * cfg.spacing) + 20
+  header:SetSize(totalWidth, totalHeight)
+  if header.dragOverlay then
+    header.dragOverlay:ClearAllPoints()
+    header.dragOverlay:SetAllPoints(header)
+  end
+
   for i, frame in ipairs(self.frames[group]) do
     frame:SetSize(cfg.width, cfg.height)
     frame.name:SetWidth(cfg.width - 42)
     frame:ClearAllPoints()
+
     local isVisibleFrame = (frame.unit ~= nil) or (frame.simulationData ~= nil and self:IsSimulationEnabled())
     if isVisibleFrame then
-      if not lastVisible then
-        frame:SetPoint("TOPLEFT", header, "TOPLEFT", 0, 0)
+      if group == "friendly" and visibleCount > 5 then
+        local index = i - 1
+        local col = math.floor(index / 5)
+        local row = index % 5
+        local x = -(col * (cfg.width + columnGap))
+        local y = -(row * (cfg.height + cfg.spacing))
+        frame:SetPoint("TOPRIGHT", header, "TOPRIGHT", x, y)
       else
-        frame:SetPoint("TOPLEFT", lastVisible, "BOTTOMLEFT", 0, -cfg.spacing)
+        if i == 1 then
+          frame:SetPoint("TOPLEFT", header, "TOPLEFT", 0, 0)
+        else
+          local prev = self.frames[group][i - 1]
+          if prev and ((prev.unit ~= nil) or (prev.simulationData ~= nil and self:IsSimulationEnabled())) then
+            frame:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -cfg.spacing)
+          else
+            frame:SetPoint("TOPLEFT", header, "TOPLEFT", 0, 0)
+          end
+        end
       end
-      lastVisible = frame
     else
       frame:SetPoint("TOPLEFT", header, "TOPLEFT", 0, 0)
     end
@@ -1472,28 +2095,226 @@ function SFA:InitializeFrames()
 end
 
 
+
+
+
+function SFA:MigrateFriendlySettings()
+  if not (self and self.db) then return end
+
+  local function clonePoint(src)
+    return {
+      anchor = (src and src.anchor) or "CENTER",
+      relativeTo = "UIParent",
+      relativePoint = (src and src.relativePoint) or "CENTER",
+      x = (src and src.x) or 0,
+      y = (src and src.y) or 0,
+    }
+  end
+
+  for _, group in ipairs({ "friendly", "enemy" }) do
+    local entry = self.db[group]
+    if entry then
+      local clicks = entry.clicks
+      if type(clicks) == "table" then
+        local keys = {
+          autoShrinkLargeGroups = true,
+          largeGroupScale = true,
+          grayOutOfRange = true,
+          rangeThreshold = true,
+          showMyHotsOnly = true,
+          hideBlizzardRaidFrames = true,
+        }
+
+        for key in pairs(keys) do
+          if clicks[key] ~= nil and entry[key] == nil then
+            entry[key] = clicks[key]
+          end
+          clicks[key] = nil
+        end
+      end
+
+      entry.grayOutOfRange = nil
+      entry.rangeThreshold = nil
+      self:EnsureScenarioPoints(group)
+
+      local fallback = clonePoint(entry.point)
+      local sp = entry.scenarioPoints or {}
+
+      if group == "friendly" then
+        if type(sp.smallGroup) ~= "table" then
+          sp.smallGroup = clonePoint(sp.smallGroup or sp.world or sp.arena or sp.dungeon or fallback)
+        end
+        if type(sp.raid10) ~= "table" then
+          sp.raid10 = clonePoint(sp.raid10 or fallback)
+        end
+        if type(sp.raid25) ~= "table" then
+          sp.raid25 = clonePoint(sp.raid25 or fallback)
+        end
+
+        sp.world = nil
+        sp.arena = nil
+        sp.dungeon = nil
+
+        if entry.autoShrinkLargeGroups == nil then entry.autoShrinkLargeGroups = true end
+        if entry.largeGroupScale == nil then entry.largeGroupScale = 0.85 end
+        if entry.showMyHotsOnly == nil then entry.showMyHotsOnly = false end
+        if entry.hideBlizzardRaidFrames == nil then entry.hideBlizzardRaidFrames = false end
+      else
+        if type(sp.default) ~= "table" then
+          sp.default = clonePoint(sp.default or sp.world or sp.arena or sp.dungeon or sp.raid10 or sp.raid25 or fallback)
+        end
+        sp.world = nil
+        sp.arena = nil
+        sp.dungeon = nil
+        sp.raid10 = nil
+        sp.raid25 = nil
+      end
+
+      entry.scenarioPoints = sp
+    end
+  end
+end
+
+
+
+function SFA:ApplyBlizzardRaidFramesVisibility()
+  if InCombatLockdown() then
+    self.pendingLayout = true
+    return
+  end
+
+  local hide = self.db and self.db.friendly and self.db.friendly.hideBlizzardRaidFrames
+
+  local function applyToFrame(frame, shouldHide)
+    if not frame then return end
+    if shouldHide then
+      frame:Hide()
+      if frame.UnregisterAllEvents then pcall(frame.UnregisterAllEvents, frame) end
+      if frame.SetDontSavePosition then pcall(frame.SetDontSavePosition, frame, true) end
+    else
+      frame:Show()
+    end
+  end
+
+  applyToFrame(CompactRaidFrameManager, hide)
+  applyToFrame(CompactRaidFrameContainer, hide)
+end
+
+
+
+function SFA:UpdateMinimapButtonPosition()
+  if not self.minimapButton or not Minimap then return end
+  local db = self.db and self.db.minimap
+  if not db then return end
+
+  local angle = math.rad(tonumber(db.angle) or 220)
+  local radius = 112
+  local x = math.cos(angle) * radius
+  local y = math.sin(angle) * radius
+
+  self.minimapButton:ClearAllPoints()
+  self.minimapButton:SetPoint("CENTER", Minimap, "CENTER", x, y)
+  self.minimapButton:SetShown(db.enabled ~= false)
+end
+
+function SFA:CreateMinimapButton()
+  if self.minimapButton or not Minimap then return end
+
+  local button = CreateFrame("Button", addonName .. "MinimapButton", Minimap)
+  button:SetSize(32, 32)
+  button:SetFrameStrata("MEDIUM")
+  button:SetMovable(true)
+  button:EnableMouse(true)
+  button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+  button:RegisterForDrag("LeftButton")
+
+  local icon = button:CreateTexture(nil, "ARTWORK")
+  icon:SetTexture("Interface\\AddOns\\Simple_Frame_Assistant\\Icon")
+  icon:SetSize(20, 20)
+  icon:SetPoint("CENTER")
+  button.icon = icon
+
+  local overlay = button:CreateTexture(nil, "OVERLAY")
+  overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+  overlay:SetSize(54, 54)
+  overlay:SetPoint("TOPLEFT")
+  button.overlay = overlay
+
+  button:SetScript("OnClick", function(_, btn)
+    if btn == "RightButton" then
+      if SFA and SFA.ToggleOptions then
+        SFA:ToggleOptions()
+      end
+    else
+      if SFA and SFA.ToggleOptions then
+        SFA:ToggleOptions()
+      end
+    end
+  end)
+
+  button:SetScript("OnDragStart", function(self)
+    if InCombatLockdown() then return end
+    self.dragging = true
+  end)
+
+  button:SetScript("OnDragStop", function(self)
+    self.dragging = false
+  end)
+
+  button:SetScript("OnUpdate", function(self)
+    if not self.dragging or not Minimap then return end
+    local mx, my = Minimap:GetCenter()
+    local px, py = GetCursorPosition()
+    local scale = UIParent:GetScale()
+    px, py = px / scale, py / scale
+    local angle = math.deg(math.atan2(py - my, px - mx))
+    SFA.db.minimap.angle = angle
+    SFA:UpdateMinimapButtonPosition()
+  end)
+
+  self.minimapButton = button
+  self:UpdateMinimapButtonPosition()
+end
+
+
+
+function SFA:RefreshSimulationPositionInputs()
+  if not self.options then return end
+
+  local function sync(mode, xRef, yRef)
+    local point = self:GetFriendlyScenarioPoint(mode)
+    if point then
+      if xRef then xRef:SetText(tostring(point.x or 0)) end
+      if yRef then yRef:SetText(tostring(point.y or 0)) end
+    end
+  end
+
+  sync("world", self.options.simRowWorldX, self.options.simRowWorldY)
+  sync("arena3v3", self.options.simRowArenaX, self.options.simRowArenaY)
+  sync("dungeon", self.options.simRowDungeonX, self.options.simRowDungeonY)
+  sync("raid10", self.options.simRowRaid10X, self.options.simRowRaid10Y)
+  sync("raid25", self.options.simRowRaid25X, self.options.simRowRaid25Y)
+end
+
 function SFA:OnEvent(event, ...)
   if event == "PLAYER_LOGIN" then
     self:InitializeDB()
+    self:MigrateFriendlySettings()
     self:InitializeFrames()
     self:CreateOptionsPanel()
     self:RegisterSlash()
+    self:CreateMinimapButton()
     self:RefreshQuestIndicators()
+    self:ApplyBlizzardRaidFramesVisibility()
     Print("Loaded. Type /sfa")
     return
   end
 
   if event == "PLAYER_REGEN_ENABLED" then
-    local hadPending = self.pendingRefresh or self.pendingLayout or self.pendingVisibility
-    self.pendingRefresh = false
-    self.pendingLayout = false
-    self.pendingVisibility = false
-    if hadPending then
-      self:QueueRefresh(0.01)
-      if not InCombatLockdown() then
-        self:RefreshEnemyNameplateOverlays()
-      end
-    end
+    self:FlushPendingStructuralUpdates()
+    self:ApplyBlizzardRaidFramesVisibility()
+    self:UpdateMinimapButtonPosition()
+    return
   end
 
   if event == "NAME_PLATE_UNIT_ADDED" then
@@ -1506,22 +2327,34 @@ function SFA:OnEvent(event, ...)
     local unit = ...
     if C_NamePlate and C_NamePlate.GetNamePlateForUnit then
       local frame = C_NamePlate.GetNamePlateForUnit(unit, true) or C_NamePlate.GetNamePlateForUnit(unit)
-      if frame and frame.SFAQuestIcon then
-        frame.SFAQuestIcon:Hide()
-      end
-      if frame and frame.SFAEnemySpecIcon then
-        frame.SFAEnemySpecIcon:Hide()
-      end
-      if frame and frame.SFATargetXMark then
-        frame.SFATargetXMark:Hide()
-      end
+      if frame and frame.SFAQuestIcon then frame.SFAQuestIcon:Hide() end
+      if frame and frame.SFAEnemySpecIcon then frame.SFAEnemySpecIcon:Hide() end
+      if frame and frame.SFATargetXMark then frame.SFATargetXMark:Hide() end
     end
   elseif event == "QUEST_LOG_UPDATE" or event == "UNIT_QUEST_LOG_CHANGED" or event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED" then
     self:RefreshQuestIndicators()
   elseif event == "PLAYER_TARGET_CHANGED" or event == "ARENA_PREP_OPPONENT_SPECIALIZATIONS" or event == "ARENA_OPPONENT_UPDATE" or event == "UNIT_NAME_UPDATE" then
     if not InCombatLockdown() then
       self:RefreshEnemyNameplateOverlays()
+    else
+      self.pendingVisibility = true
     end
+  end
+
+  -- Data-only combat updates
+  if InCombatLockdown() then
+    if event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH" or event == "UNIT_AURA" or event == "UNIT_NAME_UPDATE" or event == "UNIT_FLAGS" or event == "PLAYER_TARGET_CHANGED" or event == "PLAYER_ROLES_ASSIGNED" or event == "PARTY_MEMBER_ENABLE" or event == "PARTY_MEMBER_DISABLE" then
+      if self:CanRunFriendlyRefreshNow() then self:RefreshGroup("friendly") else self.pendingRefresh = true end
+      self:RefreshGroup("enemy")
+    else
+      self.pendingLayout = true
+      self.pendingVisibility = true
+    end
+    return
+  end
+
+  if not InCombatLockdown() and (event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" or event == "GROUP_ROSTER_UPDATE") then
+    self:ApplyBlizzardRaidFramesVisibility()
   end
 
   if event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" or event == "ARENA_PREP_OPPONENT_SPECIALIZATIONS" or event == "ARENA_OPPONENT_UPDATE" then

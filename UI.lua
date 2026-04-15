@@ -59,6 +59,35 @@ local function CreateSlider(parent, label, x, y, minVal, maxVal, step, value, on
   return slider
 end
 
+
+local function CreateNumberInput(parent, x, y, width, value, onCommit)
+  local box = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
+  box:SetSize(width or 50, 22)
+  box:SetPoint("TOPLEFT", x, y)
+  box:SetAutoFocus(false)
+  box:SetNumeric(false)
+  box:SetText(tostring(value or "0"))
+
+  local function commit()
+    local text = box:GetText() or ""
+    local num = tonumber(text)
+    if not num then
+      num = 0
+    end
+    box:SetText(tostring(math.floor(num + 0.5)))
+    onCommit(math.floor(num + 0.5))
+  end
+
+  box:SetScript("OnEnterPressed", function(self)
+    commit()
+    self:ClearFocus()
+  end)
+  box:SetScript("OnEditFocusLost", function()
+    commit()
+  end)
+  return box
+end
+
 local function CreateButton(parent, text, x, y, width, height, onClick)
   local btn = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
   btn:SetSize(width or 80, height or 22)
@@ -182,9 +211,11 @@ local function CreateSimulationScenarioDropDown(parent, x, y, currentMode, onSet
     addOption("arena3v3", "Arena 3v3")
     addOption("world", "World")
     addOption("dungeon", "Dungeon")
+    addOption("raid10", "Raid 10")
+    addOption("raid25", "Raid 25")
   end)
 
-  local label = currentMode == "world" and "World" or currentMode == "dungeon" and "Dungeon" or "Arena 3v3"
+  local label = currentMode == "world" and "World" or currentMode == "dungeon" and "Dungeon" or currentMode == "raid10" and "Raid 10" or currentMode == "raid25" and "Raid 25" or "Arena 3v3"
   UIDropDownMenu_SetText(drop, label)
   return drop, title
 end
@@ -197,19 +228,31 @@ function SFA:RefreshOptionsPanel()
     self.options.generalTitle:SetText("Simple Frame Assistant")
   end
   if self.options.generalSub then
-    self.options.generalSub:SetText("Midnight-only addon. Use /sfa as a shortcut to this page.")
+    self.options.generalSub:SetText("Use /sfa as a shortcut to this page. Move unlocked blocks with Shift + drag.")
   end
 
   if self.options.locked then self.options.locked:SetChecked(db.locked) end
   if self.options.hideHeaders then self.options.hideHeaders:SetChecked(db.hideHeaders) end
+  if self.options.minimapEnabled then self.options.minimapEnabled:SetChecked(db.minimap and db.minimap.enabled ~= false) end
   if self.options.otherQuestIndicator then self.options.otherQuestIndicator:SetChecked(db.other and db.other.showQuestIndicator) end
   if self.options.otherTargetXMark then self.options.otherTargetXMark:SetChecked(db.other and db.other.showTargetXMark) end
   if self.options.simulationEnabled then self.options.simulationEnabled:SetChecked(self:IsSimulationEnabled()) end
-  local simMode = db.simulation and db.simulation.scenario or "arena3v3"
-  local simText = simMode == "world" and "World" or simMode == "dungeon" and "Dungeon" or "Arena 3v3"
-  if self.options.simulationScenarioDropDown then
-    UIDropDownMenu_SetText(self.options.simulationScenarioDropDown, simText)
+
+local simMode = db.simulation and db.simulation.scenario or "arena3v3"
+local function syncSimRow(boxRef, xRef, yRef, mode)
+  local active = self:IsSimulationEnabled() and simMode == mode
+  if boxRef then boxRef:SetChecked(active) end
+  if xRef or yRef then
+    local p = self:GetFriendlyScenarioPoint(mode)
+    if xRef and p then xRef:SetText(tostring(p.x or 0)) end
+    if yRef and p then yRef:SetText(tostring(p.y or 0)) end
   end
+end
+syncSimRow(self.options.simRowWorld, self.options.simRowWorldX, self.options.simRowWorldY, "world")
+syncSimRow(self.options.simRowArena, self.options.simRowArenaX, self.options.simRowArenaY, "arena3v3")
+syncSimRow(self.options.simRowDungeon, self.options.simRowDungeonX, self.options.simRowDungeonY, "dungeon")
+syncSimRow(self.options.simRowRaid10, self.options.simRowRaid10X, self.options.simRowRaid10Y, "raid10")
+syncSimRow(self.options.simRowRaid25, self.options.simRowRaid25X, self.options.simRowRaid25Y, "raid25")
 
   if self.options.friendlyEnabled then self.options.friendlyEnabled:SetChecked(db.friendly.enabled) end
   if self.options.friendlyDebuffs then self.options.friendlyDebuffs:SetChecked(db.friendly.showDebuffs) end
@@ -218,6 +261,9 @@ function SFA:RefreshOptionsPanel()
   if self.options.enemyHealer then self.options.enemyHealer:SetChecked(db.enemy.healerMarker) end
   if self.options.enemyClass then self.options.enemyClass:SetChecked(db.enemy.classColor) end
   if self.options.friendlyClass then self.options.friendlyClass:SetChecked(db.friendly.classColor) end
+  if self.options.friendlyAutoShrink then self.options.friendlyAutoShrink:SetChecked(db.friendly.autoShrinkLargeGroups) end
+  if self.options.friendlyMyHotsOnly then self.options.friendlyMyHotsOnly:SetChecked(db.friendly.showMyHotsOnly) end
+  if self.options.friendlyHideBlizzardRaid then self.options.friendlyHideBlizzardRaid:SetChecked(db.friendly.hideBlizzardRaidFrames) end
 
   local mode = db.enemy.targetColor or "medium"
   local text = mode == "none" and "None" or mode == "soft" and "Soft" or mode == "subtle" and "Foarte discret" or "Mediu"
@@ -247,25 +293,25 @@ function SFA:BuildGroupSection(parent, group, left, top)
 
   local widthSlider = CreateSlider(parent, "Width", left, y, 120, 280, 1, db.width, function(val)
     db.width = val
-    self:ApplyLayout(group)
+    if not InCombatLockdown() then self:ApplyLayout(group) else self.pendingLayout = true end
   end)
   y = y - 72
 
   local heightSlider = CreateSlider(parent, "Height", left, y, 24, 60, 1, db.height, function(val)
     db.height = val
-    self:ApplyLayout(group)
+    if not InCombatLockdown() then self:ApplyLayout(group) else self.pendingLayout = true end
   end)
   y = y - 72
 
   local scaleSlider = CreateSlider(parent, "Scale", left, y, 0.8, 1.4, 0.1, db.scale, function(val)
     db.scale = val
-    self:ApplyLayout(group)
+    if not InCombatLockdown() then self:ApplyLayout(group) else self.pendingLayout = true end
   end)
   y = y - 72
 
   local spacingSlider = CreateSlider(parent, "Spacing", left, y, 0, 16, 1, db.spacing, function(val)
     db.spacing = val
-    self:ApplyLayout(group)
+    if not InCombatLockdown() then self:ApplyLayout(group) else self.pendingLayout = true end
   end)
   y = y - 82
 
@@ -349,7 +395,7 @@ function SFA:CreateOptionsPanel()
   root.sub:SetJustifyH("LEFT")
 
   local generalHeader = CreateSectionHeader(rootContent, "General", 18, -68)
-  local locked = CreateCheckbox(rootContent, "Lock frame blocks", 24, -104, self.db.locked, function(val)
+  local locked = CreateCheckbox(rootContent, "Lock frame blocks (move with Shift + drag when unlocked)", 24, -104, self.db.locked, function(val)
     self.db.locked = val
   end)
   local hideHeaders = CreateCheckbox(rootContent, "Hide header text", 24, -136, self.db.hideHeaders, function(val)
@@ -357,14 +403,19 @@ function SFA:CreateOptionsPanel()
     self:RefreshGroup("friendly")
     self:RefreshGroup("enemy")
   end)
+  local minimapEnabled = CreateCheckbox(rootContent, "Minimap button", 24, -168, self.db.minimap and self.db.minimap.enabled ~= false, function(val)
+    self.db.minimap = self.db.minimap or {}
+    self.db.minimap.enabled = val
+    if self.UpdateMinimapButtonPosition then self:UpdateMinimapButtonPosition() end
+  end)
 
   local generalInfo = rootContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  generalInfo:SetPoint("TOPLEFT", 24, -172)
+  generalInfo:SetPoint("TOPLEFT", 24, -204)
   generalInfo:SetWidth(760)
   generalInfo:SetJustifyH("LEFT")
-  generalInfo:SetText("Use /sfa to open this page quickly. Drag the Friendly or Enemy block in the world to reposition it. Macro text can use [@unit] and will be expanded automatically.")
+  generalInfo:SetText("Use /sfa to open this page quickly. Move unlocked Friendly or Enemy blocks with Shift + drag. Positions are remembered separately for World, Arena, Party/Dungeon, Raid 10, and Raid 25. Macro text can use [@unit] and will be expanded automatically.")
 
-  local blacklistTop = -250
+  local blacklistTop = -282
   local blacklistHeader = CreateSectionHeader(rootContent, "Aura Blacklist", 18, blacklistTop)
   local blacklistHelp = rootContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   blacklistHelp:SetPoint("TOPLEFT", 24, blacklistTop - 28)
@@ -451,27 +502,85 @@ simulationTitle:SetText("Simple Frame Assistant")
 local simulationSub = simulationContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 simulationSub:SetPoint("TOPLEFT", simulationTitle, "BOTTOMLEFT", 0, -6)
 simulationSub:SetText("Simulation and testing. Test mode resets to OFF after reload/relog.")
+
 local simulationHeader = CreateSectionHeader(simulationContent, "Simulation / Testing", 18, -68)
 local simulationEnabled = CreateCheckbox(simulationContent, "Enable test mode", 24, -104, self:IsSimulationEnabled(), function(val)
   self:SetSimulationEnabled(val)
   self:RefreshOptionsPanel()
 end)
-local simulationScenarioDropDown, simulationScenarioTitle = CreateSimulationScenarioDropDown(simulationContent, 24, -156, self.db.simulation and self.db.simulation.scenario or "arena3v3", function(mode)
-  self.db.simulation.scenario = mode
-  self.session = self.session or {}
-  self.session.simulationProfile = nil
-  if self:IsSimulationEnabled() then
-    self:SetSimulationEnabled(true)
-  else
-    self:RefreshAll()
-  end
-end)
+
+local simulationTableTitle = CreateLabel(simulationContent, "Friendly simulation layouts", 24, -156, "GameFontHighlight")
+local simulationTableSub = simulationContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+simulationTableSub:SetPoint("TOPLEFT", 24, -176)
+simulationTableSub:SetWidth(780)
+simulationTableSub:SetJustifyH("LEFT")
+simulationTableSub:SetText("Check one row to preview that Friendly layout. Edit X and Y directly to set the stored position for the matching real layout.")
+
+local simulationHeaderMode = CreateLabel(simulationContent, "Mode", 24, -210, "GameFontHighlightSmall")
+local simulationHeaderShow = CreateLabel(simulationContent, "Show", 210, -210, "GameFontHighlightSmall")
+local simulationHeaderX = CreateLabel(simulationContent, "X", 280, -210, "GameFontHighlightSmall")
+local simulationHeaderY = CreateLabel(simulationContent, "Y", 360, -210, "GameFontHighlightSmall")
+
+local function simulationScenarioRow(y, mode, label)
+  local key = self:GetFriendlyScenarioKeyForMode(mode)
+  local point = self:GetFriendlyScenarioPoint(mode)
+
+  local name = CreateLabel(simulationContent, label, 24, y, "GameFontHighlightSmall")
+  local enabled = (self:IsSimulationEnabled() and self:GetSimulationScenario() == mode)
+
+  local box = CreateCheckbox(simulationContent, "", 218, y + 2, enabled, function(val)
+    if val then
+      self.db.simulation.scenario = mode
+      self.session = self.session or {}
+      self.session.simulationProfile = nil
+      self:SetSimulationEnabled(true)
+    else
+      if self:IsSimulationEnabled() and self:GetSimulationScenario() == mode then
+        self:SetSimulationEnabled(false)
+      end
+    end
+    self:RefreshOptionsPanel()
+  end)
+
+  local xBox = CreateNumberInput(simulationContent, 280, y + 4, 56, point and point.x or 0, function(val)
+    local p = self:GetFriendlyScenarioPoint(mode)
+    if p then
+      p.x = val
+      if self:IsSimulationEnabled() and self:GetSimulationScenario() == mode and not InCombatLockdown() then
+        self:ApplyLayout("friendly")
+        self:RefreshGroup("friendly")
+      end
+      if self.RefreshSimulationPositionInputs then self:RefreshSimulationPositionInputs() end
+    end
+  end)
+
+  local yBox = CreateNumberInput(simulationContent, 360, y + 4, 56, point and point.y or 0, function(val)
+    local p = self:GetFriendlyScenarioPoint(mode)
+    if p then
+      p.y = val
+      if self:IsSimulationEnabled() and self:GetSimulationScenario() == mode and not InCombatLockdown() then
+        self:ApplyLayout("friendly")
+        self:RefreshGroup("friendly")
+      end
+      if self.RefreshSimulationPositionInputs then self:RefreshSimulationPositionInputs() end
+    end
+  end)
+
+  return name, box, xBox, yBox
+end
+
+local simRowWorldLabel, simRowWorld, simRowWorldX, simRowWorldY = simulationScenarioRow(-236, "world", "World")
+local simRowArenaLabel, simRowArena, simRowArenaX, simRowArenaY = simulationScenarioRow(-268, "arena3v3", "Arena 3v3")
+local simRowDungeonLabel, simRowDungeon, simRowDungeonX, simRowDungeonY = simulationScenarioRow(-300, "dungeon", "Dungeon / Party")
+local simRowRaid10Label, simRowRaid10, simRowRaid10X, simRowRaid10Y = simulationScenarioRow(-332, "raid10", "Raid 10")
+local simRowRaid25Label, simRowRaid25, simRowRaid25X, simRowRaid25Y = simulationScenarioRow(-364, "raid25", "Raid 25")
+
 local simulationHelp = simulationContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-simulationHelp:SetPoint("TOPLEFT", 24, -238)
+simulationHelp:SetPoint("TOPLEFT", 24, -408)
 simulationHelp:SetWidth(780)
 simulationHelp:SetJustifyH("LEFT")
-simulationHelp:SetText("Generates example Friendly and Enemy frames without needing to be in a real arena, world pull, or dungeon group. Arena 3v3 shows three enemies and three friendly players with sample DoTs, buffs, healer examples, and target highlight. World shows one friendly and one enemy target. Dungeon shows a five-player party and one enemy target for layout testing.")
-simulationContent:SetHeight(330)
+simulationHelp:SetText("Simulation mirrors the real layouts: World, Arena 3v3, Dungeon / Party, Raid 10, and Raid 25. Friendly positions are edited directly here and used by the matching real context. Enemy stays target-only outside arena. Move unlocked blocks with Shift + drag.")
+simulationContent:SetHeight(500)
 
 local friendlyPanel = CreateCanvasFrame(addonName .. "OptionsFriendly")
   local friendlyContent = friendlyPanel.content
@@ -488,7 +597,29 @@ local friendlyPanel = CreateCanvasFrame(addonName .. "OptionsFriendly")
     self:RefreshGroup("enemy")
     self:QueueRefresh()
   end)
-  friendlyContent:SetHeight(860)
+local friendlyAutoShrink = CreateCheckbox(friendlyContent, "Auto shrink in large groups", 24, -688, self.db.friendly.autoShrinkLargeGroups, function(val)
+  self.db.friendly.autoShrinkLargeGroups = val
+  self:ApplyLayout("friendly")
+  self:QueueRefresh()
+end)
+local friendlyMyHotsOnly = CreateCheckbox(friendlyContent, "Show my HoTs only", 24, -760, self.db.friendly.showMyHotsOnly, function(val)
+  self.db.friendly.showMyHotsOnly = val
+  self:RefreshGroup("friendly")
+end)
+local friendlyHideBlizzardRaid = CreateCheckbox(friendlyContent, "Hide Blizzard raid frames", 24, -796, self.db.friendly.hideBlizzardRaidFrames, function(val)
+  self.db.friendly.hideBlizzardRaidFrames = val
+  if not InCombatLockdown() then
+    self:ApplyBlizzardRaidFramesVisibility()
+  else
+    self.pendingLayout = true
+  end
+end)
+local friendlyLargeScale = CreateSlider(friendlyContent, "Large group scale", 24, -842, 0.50, 1.00, 0.05, self.db.friendly.largeGroupScale or 0.85, function(val)
+  self.db.friendly.largeGroupScale = val
+  self:ApplyLayout("friendly")
+  self:QueueRefresh()
+end)
+  friendlyContent:SetHeight(1040)
 
   local enemyPanel = CreateCanvasFrame(addonName .. "OptionsEnemy")
   local enemyContent = enemyPanel.content
@@ -526,10 +657,25 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
     generalSub = root.sub,
     locked = locked,
     hideHeaders = hideHeaders,
+    minimapEnabled = minimapEnabled,
     otherQuestIndicator = otherQuestIndicator,
     otherTargetXMark = otherTargetXMark,
     simulationEnabled = simulationEnabled,
-    simulationScenarioDropDown = simulationScenarioDropDown,
+    simRowWorld = simRowWorld,
+    simRowWorldX = simRowWorldX,
+    simRowWorldY = simRowWorldY,
+    simRowArena = simRowArena,
+    simRowArenaX = simRowArenaX,
+    simRowArenaY = simRowArenaY,
+    simRowDungeon = simRowDungeon,
+    simRowDungeonX = simRowDungeonX,
+    simRowDungeonY = simRowDungeonY,
+    simRowRaid10 = simRowRaid10,
+    simRowRaid10X = simRowRaid10X,
+    simRowRaid10Y = simRowRaid10Y,
+    simRowRaid25 = simRowRaid25,
+    simRowRaid25X = simRowRaid25X,
+    simRowRaid25Y = simRowRaid25Y,
     blacklistInput = blacklistInput,
     blacklistRows = blacklistRows,
     blacklistEmpty = blacklistEmpty,
@@ -539,6 +685,9 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
     enemyDebuffs = enemySection.debuffs,
     enemyClass = enemyClass,
     friendlyClass = friendlyClass,
+    friendlyAutoShrink = friendlyAutoShrink,
+    friendlyMyHotsOnly = friendlyMyHotsOnly,
+    friendlyHideBlizzardRaid = friendlyHideBlizzardRaid,
     targetColorDropDown = targetDropDown,
   }
 
