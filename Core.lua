@@ -1928,7 +1928,7 @@ frame.roleIcon:SetPoint("CENTER", frame.health or frame, "CENTER", 0, 0)
 frame.roleIcon:Hide()
 
 frame.role = frame:CreateFontString(nil, "OVERLAY")
-  frame.role:SetFont("Fonts\\FRIZQT__.TTF", 16, "THICKOUTLINE")
+  frame.role:SetFont("Fonts\\FRIZQT__.TTF", 32, "THICKOUTLINE")
   frame.role:ClearAllPoints()
   frame.role:SetPoint("CENTER", frame.health or frame, "CENTER", 0, 0)
 
@@ -2445,3 +2445,45 @@ end
 function SFA:UpdateEnemySpecIcon(frame, group, unit)
   if frame and frame.specIcon then frame.specIcon:Hide() end
 end
+
+
+-- === SFA GCD Stats (Character Frame) ===
+local function SFA_UpdateCharacterGCD()
+    if not CharacterFrame or not CharacterFrame:IsShown() then return end
+
+    local enabled = true
+    if SFA and SFA.db and SFA.db.other and SFA.db.other.showCharacterGCD ~= nil then
+        enabled = SFA.db.other.showCharacterGCD
+    end
+
+    if not enabled then
+        if SFA_GCDText then
+            SFA_GCDText:SetText("")
+            SFA_GCDText:Hide()
+        end
+        return
+    end
+
+    local haste = UnitSpellHaste("player") / 100
+    local gcd = math.max(0.75, 1.5 / (1 + haste))
+    local one = gcd * 1.25
+
+    if not SFA_GCDText then
+        SFA_GCDText = CharacterFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        SFA_GCDText:SetPoint("TOPLEFT", CharacterStatsPane, "BOTTOMLEFT", 0, -20)
+        SFA_GCDText:SetJustifyH("LEFT")
+    end
+
+    SFA_GCDText:SetText(string.format("Estimated GCD: %.2f\nOne-Button GCD: %.2f", gcd, one))
+    SFA_GCDText:Show()
+end
+
+local f = CreateFrame("Frame")
+f:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
+f:RegisterEvent("UNIT_INVENTORY_CHANGED")
+f:RegisterEvent("PLAYER_ENTERING_WORLD")
+f:SetScript("OnEvent", function()
+    C_Timer.After(0.1, SFA_UpdateCharacterGCD)
+end)
+
+hooksecurefunc("PaperDollFrame_UpdateStats", SFA_UpdateCharacterGCD)

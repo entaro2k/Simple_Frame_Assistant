@@ -236,6 +236,7 @@ function SFA:RefreshOptionsPanel()
   if self.options.minimapEnabled then self.options.minimapEnabled:SetChecked(db.minimap and db.minimap.enabled ~= false) end
   if self.options.otherQuestIndicator then self.options.otherQuestIndicator:SetChecked(db.other and db.other.showQuestIndicator) end
   if self.options.otherTargetXMark then self.options.otherTargetXMark:SetChecked(db.other and db.other.showTargetXMark) end
+  if self.options.otherCharacterGCD then self.options.otherCharacterGCD:SetChecked(db.other and db.other.showCharacterGCD ~= false) end
   if self.options.simulationEnabled then self.options.simulationEnabled:SetChecked(self:IsSimulationEnabled()) end
 
 local simMode = db.simulation and db.simulation.scenario or "arena3v3"
@@ -488,6 +489,19 @@ function SFA:CreateOptionsPanel()
     self.db.other.showTargetXMark = val
     self:RefreshGroup("enemy")
   end)
+  local otherCharacterGCD = CreateCheckbox(otherContent, "Show Estimated / One-Button GCD under Character window", 24, -168, self.db.other.showCharacterGCD ~= false, function(val)
+    self.db.other.showCharacterGCD = val
+    if SFA_UpdateCharacterGCD then
+      SFA_UpdateCharacterGCD()
+    elseif CharacterFrame and CharacterFrame:IsShown() and SFA_GCDText then
+      if val then
+        SFA_GCDText:Show()
+      else
+        SFA_GCDText:SetText("")
+        SFA_GCDText:Hide()
+      end
+    end
+  end)
   local otherHelp = otherContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   otherHelp:SetPoint("TOPLEFT", 24, -212)
   otherHelp:SetWidth(760)
@@ -660,6 +674,7 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
     minimapEnabled = minimapEnabled,
     otherQuestIndicator = otherQuestIndicator,
     otherTargetXMark = otherTargetXMark,
+    otherCharacterGCD = otherCharacterGCD,
     simulationEnabled = simulationEnabled,
     simRowWorld = simRowWorld,
     simRowWorldX = simRowWorldX,
