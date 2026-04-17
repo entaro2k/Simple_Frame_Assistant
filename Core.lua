@@ -250,6 +250,18 @@ function SFA:IsQuestUnit(unit)
   return false
 end
 
+
+
+function SFA:ShouldShowComboCircle()
+  local _, classTag = UnitClass("player")
+  if classTag ~= "DRUID" then
+    return false
+  end
+  local comboType = (Enum and Enum.PowerType and Enum.PowerType.ComboPoints) or 4
+  local comboPoints = UnitPower("player", comboType)
+  return comboPoints and comboPoints >= 5
+end
+
 function SFA:GetNameplateAnchor(frame)
   if not frame then return nil end
   if frame.UnitFrame and frame.UnitFrame.name then
@@ -577,27 +589,41 @@ function SFA:EnsureEnemySpecNameplateIcon(frame)
   return nil
 end
 
+
+
+
 function SFA:EnsureEnemyTargetXNameplate(frame)
-  if frame.SFATargetXMark then
-    return frame.SFATargetXMark
+  if not frame then return nil end
+
+  if not frame.SFATargetXMark then
+    local xMark = frame:CreateFontString(nil, "OVERLAY")
+    xMark:SetFont("Fonts\\FRIZQT__.TTF", 18, "THICKOUTLINE")
+    xMark:SetText("X")
+    xMark:SetTextColor(1, 0.1, 0.1, 1)
+    xMark:SetShadowOffset(1, -1)
+    xMark:SetShadowColor(0, 0, 0, 1)
+    xMark:Hide()
+    frame.SFATargetXMark = xMark
   end
 
-  local mark = frame:CreateFontString(nil, "OVERLAY")
-  mark:SetFont("Fonts\\FRIZQT__.TTF", 22, "THICKOUTLINE")
-  mark:SetText("X")
-  mark:SetTextColor(1, 0.1, 0.1, 1)
+  -- Hide legacy indicators from older builds
+  if frame.SFAComboCircle then frame.SFAComboCircle:Hide() end
+  if frame.SFAComboDot and frame.SFAComboDot.Hide then frame.SFAComboDot:Hide() end
 
-  local anchor = self:GetNameplateAnchor(frame)
-  if anchor then
-    mark:SetPoint("BOTTOM", anchor, "TOP", 0, 2)
-  else
-    mark:SetPoint("CENTER", frame, "TOP", 0, -10)
+  if not frame.SFAComboOrb then
+    local orb = frame:CreateTexture(nil, "OVERLAY")
+    orb:SetTexture("Interface\\COMMON\\Indicator-Red")
+    orb:SetSize(20, 20)
+    orb:Hide()
+    frame.SFAComboOrb = orb
   end
 
-  mark:Hide()
-  frame.SFATargetXMark = mark
-  return mark
+  return frame.SFATargetXMark
 end
+
+
+
+
 
 function SFA:UpdateEnemyNameplateOverlays(unit)
   if not C_NamePlate or not C_NamePlate.GetNamePlateForUnit then return end
@@ -625,10 +651,29 @@ function SFA:UpdateEnemyNameplateOverlays(unit)
     if anchor then
       xMark:ClearAllPoints()
       xMark:SetPoint("BOTTOM", anchor, "TOP", 0, 2)
+
+      if frame.SFAComboOrb then
+        frame.SFAComboOrb:ClearAllPoints()
+        frame.SFAComboOrb:SetPoint("LEFT", xMark, "RIGHT", 4, 3)
+      end
     end
+
     xMark:Show()
+    if frame.SFAComboCircle then frame.SFAComboCircle:Hide() end
+    if frame.SFAComboDot then frame.SFAComboDot:Hide() end
+
+    if frame.SFAComboOrb then
+      if self:ShouldShowComboCircle() then
+        frame.SFAComboOrb:Show()
+      else
+        frame.SFAComboOrb:Hide()
+      end
+    end
   else
     xMark:Hide()
+    if frame.SFAComboCircle then frame.SFAComboCircle:Hide() end
+    if frame.SFAComboDot then frame.SFAComboDot:Hide() end
+    if frame.SFAComboOrb then frame.SFAComboOrb:Hide() end
   end
 end
 
@@ -642,6 +687,9 @@ function SFA:RefreshEnemyNameplateOverlays()
     else
       if frame.SFAEnemySpecIcon then frame.SFAEnemySpecIcon:Hide() end
       if frame.SFATargetXMark then frame.SFATargetXMark:Hide() end
+      if frame.SFAComboCircle then frame.SFAComboCircle:Hide() end
+      if frame.SFAComboDot then frame.SFAComboDot:Hide() end
+      if frame.SFAComboOrb then frame.SFAComboOrb:Hide() end
     end
   end
 end
@@ -2301,15 +2349,14 @@ function SFA:OnEvent(event, ...)
     self:FlushPendingStructuralUpdates()
     self:ApplyBlizzardRaidFramesVisibility()
     self:UpdateMinimapButtonPosition()
+    self:RefreshEnemyNameplateOverlays()
     return
   end
 
   if event == "NAME_PLATE_UNIT_ADDED" then
     local unit = ...
     self:UpdateNameplateQuestIndicator(unit)
-    if not InCombatLockdown() then
-      self:UpdateEnemyNameplateOverlays(unit)
-    end
+    self:UpdateEnemyNameplateOverlays(unit)
   elseif event == "NAME_PLATE_UNIT_REMOVED" then
     local unit = ...
     if C_NamePlate and C_NamePlate.GetNamePlateForUnit then
@@ -2317,15 +2364,20 @@ function SFA:OnEvent(event, ...)
       if frame and frame.SFAQuestIcon then frame.SFAQuestIcon:Hide() end
       if frame and frame.SFAEnemySpecIcon then frame.SFAEnemySpecIcon:Hide() end
       if frame and frame.SFATargetXMark then frame.SFATargetXMark:Hide() end
+      if frame and frame.SFAComboCircle then frame.SFAComboCircle:Hide() end
+      if frame and frame.SFAComboDot then frame.SFAComboDot:Hide() end
+      if frame and frame.SFAComboOrb then frame.SFAComboOrb:Hide() end
     end
   elseif event == "QUEST_LOG_UPDATE" or event == "UNIT_QUEST_LOG_CHANGED" or event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED" then
     self:RefreshQuestIndicators()
+
+elseif event == "UNIT_POWER_UPDATE" then
+  local unit, powerType = ...
+  if unit == "player" and (powerType == "COMBO_POINTS" or powerType == "COMBOPOINTS") then
+    self:RefreshEnemyNameplateOverlays()
+  end
   elseif event == "PLAYER_TARGET_CHANGED" or event == "ARENA_PREP_OPPONENT_SPECIALIZATIONS" or event == "ARENA_OPPONENT_UPDATE" or event == "UNIT_NAME_UPDATE" then
-    if not InCombatLockdown() then
-      self:RefreshEnemyNameplateOverlays()
-    else
-      self.pendingVisibility = true
-    end
+    self:RefreshEnemyNameplateOverlays()
   end
 
   -- Data-only combat updates
@@ -2367,6 +2419,7 @@ function SFA:RegisterEvents()
   self.eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
   self.eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
   self.eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
+  self.eventFrame:RegisterEvent("UNIT_POWER_UPDATE")
   self.eventFrame:RegisterEvent("UNIT_HEALTH")
   self.eventFrame:RegisterEvent("UNIT_MAXHEALTH")
   self.eventFrame:RegisterEvent("UNIT_AURA")

@@ -92,6 +92,8 @@ AddOns/
 - No unnecessary UI clutter
 - Fast readability
 
+---
 
+## 👤 Author
 
-
+En Taro + ChatGPT
