@@ -71,7 +71,7 @@ enemy = {
   clicks = {
     LeftButton = "/target [@unit]",
     RightButton = "/cast [@unit,harm,nodead] Cyclone",
-    MiddleButton = "/cast [@unit,harm,nodead] Skull Bash",
+    MiddleButton = "/cast [mod:alt,@unit,harm,nodead] Soothe; [@unit,harm,nodead] Skull Bash",
     Button4 = "",
     Button5 = "",
   },

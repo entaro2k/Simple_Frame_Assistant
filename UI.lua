@@ -127,6 +127,187 @@ local function CreateEditBox(parent, label, x, y, width, text, onCommit, onChang
   return edit, title
 end
 
+
+local macroEditBoxCounter = 0
+
+local function CreateMacroEditBox(parent, label, x, y, width, text, onCommit, onChange)
+  local title = CreateLabel(parent, label, x, y, "GameFontHighlightSmall")
+
+  local bg = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+  bg:SetSize(width, 62)
+  bg:SetPoint("TOPLEFT", x, y - 18)
+  if bg.SetBackdrop then
+    bg:SetBackdrop({
+      bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+      edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+      tile = true,
+      tileSize = 8,
+      edgeSize = 8,
+      insets = { left = 2, right = 2, top = 2, bottom = 2 },
+    })
+    bg:SetBackdropColor(0.02, 0.02, 0.02, 0.9)
+    bg:SetBackdropBorderColor(0.35, 0.35, 0.35, 0.8)
+  end
+
+  local scroll = CreateFrame("ScrollFrame", nil, bg, "UIPanelScrollFrameTemplate")
+  scroll:SetPoint("TOPLEFT", 6, -6)
+  scroll:SetPoint("BOTTOMRIGHT", -28, 6)
+
+  local edit = CreateFrame("EditBox", nil, scroll)
+  edit:SetMultiLine(true)
+  edit:SetAutoFocus(false)
+  edit:EnableKeyboard(true)
+  edit:EnableMouse(true)
+  if edit.SetFontObject then edit:SetFontObject(ChatFontNormal or GameFontHighlightSmall) end
+  if edit.SetTextColor then edit:SetTextColor(1, 1, 1, 1) end
+  if edit.SetShadowColor then edit:SetShadowColor(0, 0, 0, 0) end
+  if edit.SetJustifyH then edit:SetJustifyH("LEFT") end
+  if edit.SetJustifyV then edit:SetJustifyV("TOP") end
+  if edit.SetTextInsets then edit:SetTextInsets(4, 4, 4, 4) end
+  if edit.SetWidth then edit:SetWidth(width - 46) end
+  edit:SetText(text or "")
+  edit:SetCursorPosition(0)
+  scroll:SetScrollChild(edit)
+
+  local editHint = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  editHint:SetPoint("TOPLEFT", bg, "BOTTOMLEFT", 2, -6)
+  editHint:SetWidth(width)
+  editHint:SetHeight(22)
+  editHint:SetHeight(18)
+  editHint:SetJustifyH("LEFT")
+  editHint:SetText('Editing => use /cast [mod:alt,mod:shift,mod:ctrl] if needed.')
+  editHint:SetTextColor(1, 0.82, 0, 1)
+  editHint:Hide()
+
+  local caret = edit:CreateTexture(nil, "OVERLAY")
+  caret:SetColorTexture(1, 1, 1, 1)
+  caret:SetSize(1, 14)
+  caret:Hide()
+
+  local function setFocused(state)
+    if not bg.SetBackdropBorderColor then return end
+    if state then
+      bg:SetBackdropBorderColor(1, 0.82, 0, 1)
+    else
+      bg:SetBackdropBorderColor(0.35, 0.35, 0.35, 0.8)
+    end
+  end
+
+  local function resizeToText()
+    local lines = edit.GetNumLines and edit:GetNumLines() or 3
+    if lines < 3 then lines = 3 end
+    local lineHeight = 14
+    edit:SetHeight(lines * lineHeight + 8)
+    if scroll.UpdateScrollChildRect then scroll:UpdateScrollChildRect() end
+  end
+
+  local function commit()
+    if onCommit then onCommit(edit:GetText()) end
+  end
+
+  local function focusEdit()
+    edit:SetFocus()
+  end
+
+  local blinkElapsed = 0
+  local blinkOn = true
+  local function updateCaretBlink(elapsed)
+    blinkElapsed = blinkElapsed + elapsed
+    if blinkElapsed >= 0.5 then
+      blinkElapsed = 0
+      blinkOn = not blinkOn
+      caret:SetShown(blinkOn)
+    end
+  end
+
+  bg:EnableMouse(true)
+  bg:SetScript("OnMouseDown", focusEdit)
+
+  edit:SetScript("OnMouseDown", function(self)
+    self:SetFocus()
+  end)
+  edit:SetScript("OnMouseUp", function(self)
+    self:SetFocus()
+  end)
+
+  edit:SetScript("OnEditFocusGained", function(self)
+    setFocused(true)
+    editHint:Show()
+    blinkElapsed = 0
+    blinkOn = true
+    caret:Show()
+    bg:SetScript("OnUpdate", function(_, elapsed)
+      updateCaretBlink(elapsed)
+    end)
+  end)
+
+  edit:SetScript("OnTextChanged", function(self, userInput)
+    resizeToText()
+    if onChange and userInput then onChange(self:GetText()) end
+  end)
+
+  edit:SetScript("OnCursorChanged", function(self, xPos, yPos, widthPos, heightPos)
+    if scroll.UpdateScrollChildRect then scroll:UpdateScrollChildRect() end
+    if caret then
+      caret:ClearAllPoints()
+      caret:SetHeight(heightPos and heightPos > 0 and heightPos or 14)
+      caret:SetPoint("TOPLEFT", edit, "TOPLEFT", xPos + 3, -yPos)
+      if self:HasFocus() then caret:Show() end
+    end
+
+    if scroll.GetVerticalScroll and scroll.SetVerticalScroll then
+      local top = scroll:GetVerticalScroll()
+      local bottom = top + scroll:GetHeight()
+      local cursorTop = yPos
+      local cursorBottom = yPos + heightPos
+      if cursorBottom > bottom - 4 then
+        scroll:SetVerticalScroll(cursorBottom - scroll:GetHeight() + 4)
+      elseif cursorTop < top + 4 then
+        scroll:SetVerticalScroll(math.max(0, cursorTop - 4))
+      end
+    end
+  end)
+
+  edit:SetScript("OnEditFocusLost", function()
+    commit()
+    setFocused(false)
+    editHint:Hide()
+    caret:Hide()
+    bg:SetScript("OnUpdate", nil)
+  end)
+
+  edit:SetScript("OnEscapePressed", function(self)
+    commit()
+    self:ClearFocus()
+  end)
+
+  edit:SetScript("OnEnterPressed", function(self)
+    if IsShiftKeyDown and IsShiftKeyDown() then
+      self:Insert("\n")
+      resizeToText()
+      return
+    end
+    commit()
+    self:ClearFocus()
+  end)
+
+  resizeToText()
+  edit.bg = bg
+  edit.scrollFrame = scroll
+  edit.title = title
+  edit.hint = editHint
+  edit.tip = nil
+  edit.caret = caret
+  return edit, title, bg, scroll
+end
+
+
+local function StackBelow(widget, anchor, gap)
+  if not widget or not anchor then return end
+  widget:ClearAllPoints()
+  widget:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -(gap or 8))
+end
+
 local function CreateSectionHeader(parent, text, x, y)
   local title = parent:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
   title:SetPoint("TOPLEFT", x, y)
@@ -314,30 +495,67 @@ function SFA:BuildGroupSection(parent, group, left, top)
     db.spacing = val
     if not InCombatLockdown() then self:ApplyLayout(group) else self.pendingLayout = true end
   end)
-  y = y - 82
 
-  local leftClick = CreateEditBox(parent, "Left click macro", left, y, 360, db.clicks.LeftButton, function(text)
+  local leftClick = CreateMacroEditBox(parent, "Left click macro", left, y - 82, 360, db.clicks.LeftButton, function(text)
     db.clicks.LeftButton = text
     self:RefreshGroup(group)
   end, function(text)
     db.clicks.LeftButton = text
   end)
-  y = y - 62
 
-  local rightClick = CreateEditBox(parent, "Right click macro", left, y, 360, db.clicks.RightButton, function(text)
+  local rightClick = CreateMacroEditBox(parent, "Right click macro", left, y - 82, 360, db.clicks.RightButton, function(text)
     db.clicks.RightButton = text
     self:RefreshGroup(group)
   end, function(text)
     db.clicks.RightButton = text
   end)
-  y = y - 62
 
-  local middleClick = CreateEditBox(parent, "Middle click macro", left, y, 360, db.clicks.MiddleButton, function(text)
+  local middleClick = CreateMacroEditBox(parent, "Middle click macro", left, y - 82, 360, db.clicks.MiddleButton, function(text)
     db.clicks.MiddleButton = text
     self:RefreshGroup(group)
   end, function(text)
     db.clicks.MiddleButton = text
   end)
+
+  -- full stack layout for the macro area
+  if leftClick.title then
+    leftClick.title:ClearAllPoints()
+    leftClick.title:SetPoint("TOPLEFT", spacingSlider, "BOTTOMLEFT", 0, -28)
+  end
+  if leftClick.bg then
+    leftClick.bg:ClearAllPoints()
+    leftClick.bg:SetPoint("TOPLEFT", leftClick.title, "BOTTOMLEFT", 0, -6)
+  end
+  if leftClick.hint then
+    leftClick.hint:ClearAllPoints()
+    leftClick.hint:SetPoint("TOPLEFT", leftClick.bg or leftClick, "BOTTOMLEFT", 0, -8)
+  end
+
+  if rightClick.title then
+    rightClick.title:ClearAllPoints()
+    rightClick.title:SetPoint("TOPLEFT", leftClick.hint or leftClick.bg or leftClick, "BOTTOMLEFT", 0, -16)
+  end
+  if rightClick.bg then
+    rightClick.bg:ClearAllPoints()
+    rightClick.bg:SetPoint("TOPLEFT", rightClick.title, "BOTTOMLEFT", 0, -6)
+  end
+  if rightClick.hint then
+    rightClick.hint:ClearAllPoints()
+    rightClick.hint:SetPoint("TOPLEFT", rightClick.bg or rightClick, "BOTTOMLEFT", 0, -8)
+  end
+
+  if middleClick.title then
+    middleClick.title:ClearAllPoints()
+    middleClick.title:SetPoint("TOPLEFT", rightClick.hint or rightClick.bg or rightClick, "BOTTOMLEFT", 0, -16)
+  end
+  if middleClick.bg then
+    middleClick.bg:ClearAllPoints()
+    middleClick.bg:SetPoint("TOPLEFT", middleClick.title, "BOTTOMLEFT", 0, -6)
+  end
+  if middleClick.hint then
+    middleClick.hint:ClearAllPoints()
+    middleClick.hint:SetPoint("TOPLEFT", middleClick.bg or middleClick, "BOTTOMLEFT", 0, -8)
+  end
 
   return {
     title = title,
@@ -350,6 +568,10 @@ function SFA:BuildGroupSection(parent, group, left, top)
     leftClick = leftClick,
     rightClick = rightClick,
     middleClick = middleClick,
+    leftClickBG = leftClick.bg or leftClick.scrollFrame or leftClick,
+    rightClickBG = rightClick.bg or rightClick.scrollFrame or rightClick,
+    middleClickBG = middleClick.bg or middleClick.scrollFrame or middleClick,
+    middleClickTip = middleClick.hint,
   }
 end
 
@@ -489,7 +711,7 @@ function SFA:CreateOptionsPanel()
     self.db.other.showTargetXMark = val
     self:RefreshGroup("enemy")
   end)
-  local otherCharacterGCD = CreateCheckbox(otherContent, "Show Estimated / One-Button GCD under Character window", 24, -168, self.db.other.showCharacterGCD ~= false, function(val)
+  local otherCharacterGCD = CreateCheckbox(otherContent, "Show Estimated / One-Button GCD under Character window", 24, -212, self.db.other.showCharacterGCD ~= false, function(val)
     self.db.other.showCharacterGCD = val
     if SFA_UpdateCharacterGCD then
       SFA_UpdateCharacterGCD()
@@ -503,10 +725,10 @@ function SFA:CreateOptionsPanel()
     end
   end)
   local otherHelp = otherContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  otherHelp:SetPoint("TOPLEFT", 24, -212)
+  otherHelp:SetPoint("TOPLEFT", 24, -292)
   otherHelp:SetWidth(760)
   otherHelp:SetJustifyH("LEFT")
-  otherHelp:SetText("Shows a yellow ! on an NPC nameplate when the NPC is related to an active quest objective.")
+  otherHelp:SetText("Shows a yellow ! on an NPC nameplate when the NPC is related to an active quest objective. You can also show Estimated GCD and One-Button GCD under the Character window.")
 
 local simulationPanel = CreateCanvasFrame(addonName .. "OptionsSimulation")
 local simulationContent = simulationPanel.content
@@ -604,23 +826,23 @@ local friendlyPanel = CreateCanvasFrame(addonName .. "OptionsFriendly")
   local friendlySub = friendlyContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   friendlySub:SetPoint("TOPLEFT", friendlyTitle, "BOTTOMLEFT", 0, -6)
   friendlySub:SetText("Friendly frame options.")
-  local friendlySection = self:BuildGroupSection(friendlyContent, "friendly", 24, -68)
-  local friendlyClass = CreateCheckbox(friendlyContent, "Class color health bar", 24, -652, self.db.friendly.classColor, function(val)
-    self.db.friendly.classColor = val
-    self:RefreshGroup("friendly")
-    self:RefreshGroup("enemy")
-    self:QueueRefresh()
-  end)
-local friendlyAutoShrink = CreateCheckbox(friendlyContent, "Auto shrink in large groups", 24, -688, self.db.friendly.autoShrinkLargeGroups, function(val)
+local friendlySection = self:BuildGroupSection(friendlyContent, "friendly", 24, -68)
+local friendlyClass = CreateCheckbox(friendlyContent, "Class color health bar", 24, -774, self.db.friendly.classColor, function(val)
+  self.db.friendly.classColor = val
+  self:RefreshGroup("friendly")
+  self:RefreshGroup("enemy")
+  self:QueueRefresh()
+end)
+local friendlyAutoShrink = CreateCheckbox(friendlyContent, "Auto shrink in large groups", 24, -810, self.db.friendly.autoShrinkLargeGroups, function(val)
   self.db.friendly.autoShrinkLargeGroups = val
   self:ApplyLayout("friendly")
   self:QueueRefresh()
 end)
-local friendlyMyHotsOnly = CreateCheckbox(friendlyContent, "Show my HoTs only", 24, -760, self.db.friendly.showMyHotsOnly, function(val)
+local friendlyMyHotsOnly = CreateCheckbox(friendlyContent, "Show my HoTs only", 24, -882, self.db.friendly.showMyHotsOnly, function(val)
   self.db.friendly.showMyHotsOnly = val
   self:RefreshGroup("friendly")
 end)
-local friendlyHideBlizzardRaid = CreateCheckbox(friendlyContent, "Hide Blizzard raid frames", 24, -796, self.db.friendly.hideBlizzardRaidFrames, function(val)
+local friendlyHideBlizzardRaid = CreateCheckbox(friendlyContent, "Hide Blizzard raid frames", 24, -918, self.db.friendly.hideBlizzardRaidFrames, function(val)
   self.db.friendly.hideBlizzardRaidFrames = val
   if not InCombatLockdown() then
     self:ApplyBlizzardRaidFramesVisibility()
@@ -628,12 +850,22 @@ local friendlyHideBlizzardRaid = CreateCheckbox(friendlyContent, "Hide Blizzard 
     self.pendingLayout = true
   end
 end)
-local friendlyLargeScale = CreateSlider(friendlyContent, "Large group scale", 24, -842, 0.50, 1.00, 0.05, self.db.friendly.largeGroupScale or 0.85, function(val)
+local friendlyLargeScale = CreateSlider(friendlyContent, "Large group scale", 24, -964, 0.50, 1.00, 0.05, self.db.friendly.largeGroupScale or 0.85, function(val)
   self.db.friendly.largeGroupScale = val
   self:ApplyLayout("friendly")
   self:QueueRefresh()
 end)
-  friendlyContent:SetHeight(1040)
+
+-- Full auto layout below macro boxes
+do
+  local anchor = friendlySection.middleClickTip or friendlySection.middleClickBG or friendlySection.middleClick
+  StackBelow(friendlyClass, anchor, 16)
+  StackBelow(friendlyAutoShrink, friendlyClass, 10)
+  StackBelow(friendlyMyHotsOnly, friendlyAutoShrink, 10)
+  StackBelow(friendlyHideBlizzardRaid, friendlyMyHotsOnly, 10)
+  StackBelow(friendlyLargeScale, friendlyHideBlizzardRaid, 18)
+end
+friendlyContent:SetHeight(1260)
 
   local enemyPanel = CreateCanvasFrame(addonName .. "OptionsEnemy")
   local enemyContent = enemyPanel.content
@@ -643,14 +875,19 @@ end)
   local enemySub = enemyContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   enemySub:SetPoint("TOPLEFT", enemyTitle, "BOTTOMLEFT", 0, -6)
   enemySub:SetText("Enemy frame options.")
-  local enemySection = self:BuildGroupSection(enemyContent, "enemy", 24, -68)
-  local enemyClass = CreateCheckbox(enemyContent, "Class color health bar", 24, -688, self.db.enemy.classColor, function(val)
-    self.db.enemy.classColor = val
-    self:RefreshGroup("friendly")
-    self:RefreshGroup("enemy")
-    self:QueueRefresh()
-  end)
-    enemyContent:SetHeight(1060)
+local enemySection = self:BuildGroupSection(enemyContent, "enemy", 24, -68)
+local enemyClass = CreateCheckbox(enemyContent, "Class color health bar", 24, -774, self.db.enemy.classColor, function(val)
+  self.db.enemy.classColor = val
+  self:RefreshGroup("friendly")
+  self:RefreshGroup("enemy")
+  self:QueueRefresh()
+end)
+
+do
+  local anchor = enemySection.middleClickTip or enemySection.middleClickBG or enemySection.middleClick
+  StackBelow(enemyClass, anchor, 16)
+end
+  enemyContent:SetHeight(1200)
 
 if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOnCategory and Settings.RegisterCanvasLayoutSubcategory then
     local category = Settings.RegisterCanvasLayoutCategory(root, "Simple Frame Assistant")

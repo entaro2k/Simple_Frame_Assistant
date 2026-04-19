@@ -793,22 +793,29 @@ function SFA:ApplyClickBindings(frame, group)
   if type(clicks) ~= "table" then return end
 
   local unit = frame.unit
+  frame:SetAttribute("unit", unit)
+
   local allowedButtons = {
-    LeftButton = { "type1", "macrotext1" },
-    RightButton = { "type2", "macrotext2" },
-    MiddleButton = { "type3", "macrotext3" },
-    Button4 = { "type4", "macrotext4" },
-    Button5 = { "type5", "macrotext5" },
+    LeftButton = { "type1", "macrotext1", "*type1", "*macrotext1" },
+    RightButton = { "type2", "macrotext2", "*type2", "*macrotext2" },
+    MiddleButton = { "type3", "macrotext3", "*type3", "*macrotext3" },
+    Button4 = { "type4", "macrotext4", "*type4", "*macrotext4" },
+    Button5 = { "type5", "macrotext5", "*type5", "*macrotext5" },
   }
 
   for button, keys in pairs(allowedButtons) do
     local macroText = clicks[button]
     if macroText and macroText ~= "" and unit then
+      local resolved = tostring(macroText):gsub("@unit", "@" .. unit)
       frame:SetAttribute(keys[1], "macro")
-      frame:SetAttribute(keys[2], tostring(macroText):gsub("@unit", "@" .. unit))
+      frame:SetAttribute(keys[2], resolved)
+      frame:SetAttribute(keys[3], "macro")
+      frame:SetAttribute(keys[4], resolved)
     else
       frame:SetAttribute(keys[1], nil)
       frame:SetAttribute(keys[2], nil)
+      frame:SetAttribute(keys[3], nil)
+      frame:SetAttribute(keys[4], nil)
     end
   end
 end
@@ -1677,6 +1684,7 @@ function SFA:RefreshGroup(group)
     for _, frame in ipairs(self.frames[group]) do
       frame.simulationData = nil
       frame.unit = nil
+      frame:SetAttribute("unit", nil)
       frame:SetAlpha(1)
       frame:Hide()
     end
@@ -1761,6 +1769,7 @@ function SFA:RefreshGroup(group)
       self:UpdateFrameVisual(frame, group)
     else
       frame.unit = nil
+      frame:SetAttribute("unit", nil)
       frame:SetAlpha(1)
       frame:Hide()
     end
@@ -1885,7 +1894,8 @@ function SFA:CreateUnitFrame(parent, unit, group, index)
   local cfg = self.db[group]
   local frame = CreateFrame("Button", addonName .. group .. index, parent, "SecureUnitButtonTemplate")
   frame.unit = unit
-  frame:RegisterForClicks("LeftButtonUp", "RightButtonUp", "MiddleButtonUp", "Button4Up", "Button5Up")
+  frame:SetAttribute("unit", unit)
+  frame:RegisterForClicks("AnyUp")
   frame:SetSize(cfg.width, cfg.height)
   if index == 1 then
     frame:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, 0)
