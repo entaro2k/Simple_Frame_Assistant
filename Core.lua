@@ -235,19 +235,95 @@ local function Print(msg)
 end
 SFA.Print = Print
 
-function SFA:IsQuestUnit(unit)
-  if not unit or not UnitExists(unit) or not C_QuestLog then
+function SFA:IsValidQuestIndicatorMob(unit)
+  if not unit or not UnitExists(unit) then
     return false
   end
 
-  if C_QuestLog.UnitIsRelatedToActiveQuest then
+  -- Quest/scenario indicators are only valid for attackable, alive mobs.
+  -- Some scenario mobs are attackable without always passing UnitIsEnemy reliably,
+  -- so use UnitCanAttack as the primary hostile check.
+  if UnitCanAttack and not UnitCanAttack("player", unit) then return false end
+  if UnitIsEnemy and not UnitCanAttack and not UnitIsEnemy("player", unit) then return false end
+  if UnitIsDead(unit) then return false end
+  if UnitIsPlayer(unit) then return false end
+  if UnitIsOtherPlayersPet and UnitIsOtherPlayersPet(unit) then return false end
+
+  return true
+end
+
+function SFA:GetQuestTooltipScanner()
+  if self.questTooltipScanner then
+    return self.questTooltipScanner
+  end
+
+  local scanner = CreateFrame("GameTooltip", "SFA_QuestTooltipScanner", UIParent, "GameTooltipTemplate")
+  scanner:SetOwner(UIParent, "ANCHOR_NONE")
+  self.questTooltipScanner = scanner
+  return scanner
+end
+
+function SFA:TooltipLineStartsWithDash(text)
+  if not text then return false end
+
+  local ok, result = pcall(function()
+    text = tostring(text)
+    text = text:match("^%s*(.-)%s*$") or text
+    return text:find("^%-") ~= nil
+  end)
+
+  return ok and result or false
+end
+
+function SFA:GetTooltipDataLineText(line)
+  if not line then return nil end
+
+  if TooltipUtil and TooltipUtil.SurfaceArgs then
+    pcall(TooltipUtil.SurfaceArgs, line)
+  end
+
+  return line.leftText or line.text or line.rightText
+end
+
+function SFA:HasQuestObjectiveTooltip(unit)
+  -- Prefer the tooltip data API. Reading GameTooltip FontString text on nameplates
+  -- can return protected/secret strings and taint string comparisons.
+  if C_TooltipInfo and C_TooltipInfo.GetUnit then
+    local ok, data = pcall(C_TooltipInfo.GetUnit, unit)
+    if ok and data and data.lines and #data.lines > 4 then
+      local lineText = self:GetTooltipDataLineText(data.lines[5])
+      if self:TooltipLineStartsWithDash(lineText) then
+        return true
+      end
+
+      -- In scenarios, Blizzard can expose the fifth tooltip line as a protected/secret
+      -- string. If the unit is already validated as an attackable mob and the tooltip
+      -- has the objective-style layout (>4 lines), keep the indicator active instead
+      -- of failing the string comparison. This is what catches scenario objectives.
+      return true
+    end
+  end
+
+  -- Do NOT fall back to GameTooltip:SetUnit here. In PvP/arena and some
+  -- protected UI paths, SetUnit can taint Blizzard tooltip data and throw
+  -- secret-value errors from GameTooltip:SetWatch. C_TooltipInfo is the safe
+  -- path; if it does not provide usable objective lines, fail closed.
+  return false
+end
+
+function SFA:IsQuestUnit(unit)
+  if not self:IsValidQuestIndicatorMob(unit) then
+    return false
+  end
+
+  if C_QuestLog and C_QuestLog.UnitIsRelatedToActiveQuest then
     local ok, result = pcall(C_QuestLog.UnitIsRelatedToActiveQuest, unit)
     if ok and result then
       return true
     end
   end
 
-  return false
+  return self:HasQuestObjectiveTooltip(unit)
 end
 
 
@@ -2366,6 +2442,11 @@ function SFA:OnEvent(event, ...)
   if event == "NAME_PLATE_UNIT_ADDED" then
     local unit = ...
     self:UpdateNameplateQuestIndicator(unit)
+    C_Timer.After(0.20, function()
+      if SFA and SFA.db then
+        SFA:UpdateNameplateQuestIndicator(unit)
+      end
+    end)
     self:UpdateEnemyNameplateOverlays(unit)
   elseif event == "NAME_PLATE_UNIT_REMOVED" then
     local unit = ...
@@ -2378,8 +2459,13 @@ function SFA:OnEvent(event, ...)
       if frame and frame.SFAComboDot then frame.SFAComboDot:Hide() end
       if frame and frame.SFAComboOrb then frame.SFAComboOrb:Hide() end
     end
-  elseif event == "QUEST_LOG_UPDATE" or event == "UNIT_QUEST_LOG_CHANGED" or event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED" then
+  elseif event == "QUEST_LOG_UPDATE" or event == "UNIT_QUEST_LOG_CHANGED" or event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED" or event == "SCENARIO_UPDATE" or event == "SCENARIO_CRITERIA_UPDATE" then
     self:RefreshQuestIndicators()
+
+  elseif event == "UPDATE_MOUSEOVER_UNIT" then
+    if UnitExists("mouseover") then
+      self:UpdateNameplateQuestIndicator("mouseover")
+    end
 
 elseif event == "UNIT_POWER_UPDATE" then
   local unit, powerType = ...
@@ -2387,6 +2473,9 @@ elseif event == "UNIT_POWER_UPDATE" then
     self:RefreshEnemyNameplateOverlays()
   end
   elseif event == "PLAYER_TARGET_CHANGED" or event == "ARENA_PREP_OPPONENT_SPECIALIZATIONS" or event == "ARENA_OPPONENT_UPDATE" or event == "UNIT_NAME_UPDATE" then
+    if event == "PLAYER_TARGET_CHANGED" and UnitExists("target") then
+      self:UpdateNameplateQuestIndicator("target")
+    end
     self:RefreshEnemyNameplateOverlays()
   end
 
@@ -2447,6 +2536,9 @@ function SFA:RegisterEvents()
   self.eventFrame:RegisterEvent("UNIT_QUEST_LOG_CHANGED")
   self.eventFrame:RegisterEvent("QUEST_ACCEPTED")
   self.eventFrame:RegisterEvent("QUEST_REMOVED")
+  self.eventFrame:RegisterEvent("SCENARIO_UPDATE")
+  self.eventFrame:RegisterEvent("SCENARIO_CRITERIA_UPDATE")
+  self.eventFrame:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
 end
 
 SFA:RegisterEvents()
@@ -2527,9 +2619,24 @@ local function SFA_UpdateCharacterGCD()
         return
     end
 
-    local haste = UnitSpellHaste("player") / 100
-    local gcd = math.max(0.75, 1.5 / (1 + haste))
-    local one = gcd * 1.25
+    -- In PvP/arena some character stats can be returned as protected/secret values.
+    -- Never do arithmetic on them directly; if blocked, just skip this optional display.
+    local ok, gcd, one = pcall(function()
+        local hasteValue = UnitSpellHaste("player")
+        if type(hasteValue) ~= "number" then return nil, nil end
+
+        local haste = hasteValue / 100
+        local baseGCD = math.max(0.75, 1.5 / (1 + haste))
+        return baseGCD, baseGCD * 1.25
+    end)
+
+    if not ok or not gcd or not one then
+        if SFA_GCDText then
+            SFA_GCDText:SetText("")
+            SFA_GCDText:Hide()
+        end
+        return
+    end
 
     if not SFA_GCDText then
         SFA_GCDText = CharacterFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")

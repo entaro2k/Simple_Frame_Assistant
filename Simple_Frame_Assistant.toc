@@ -3,7 +3,7 @@
 ## Title: Simple Frame Assistant
 ## Notes: Simple Midnight-only friendly/enemy frame assistant.
 ## Author: En Taro & OpenAI
-## Version: 0.20.23
+## Version: 0.20.30
 ## SavedVariables: SFA_DB
 
 Config.lua
