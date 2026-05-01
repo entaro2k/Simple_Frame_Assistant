@@ -8,6 +8,16 @@ local UIDropDownMenu_SetText = UIDropDownMenu_SetText
 local UIDropDownMenu_Initialize = UIDropDownMenu_Initialize
 local UIDropDownMenu_AddButton = UIDropDownMenu_AddButton
 
+local function GetAddonVersion()
+  if C_AddOns and C_AddOns.GetAddOnMetadata then
+    return C_AddOns.GetAddOnMetadata(addonName, "Version") or "Unknown"
+  end
+  if GetAddOnMetadata then
+    return GetAddOnMetadata(addonName, "Version") or "Unknown"
+  end
+  return "Unknown"
+end
+
 local function CreateLabel(parent, text, x, y, template)
   local fs = parent:CreateFontString(nil, "OVERLAY", template or "GameFontNormal")
   fs:SetPoint("TOPLEFT", x, y)
@@ -401,12 +411,41 @@ local function CreateSimulationScenarioDropDown(parent, x, y, currentMode, onSet
   return drop, title
 end
 
+local function CreateResourceVoiceStyleDropDown(parent, x, y, currentMode, onSet)
+  local title = CreateLabel(parent, "Voice style", x, y, "GameFontHighlight")
+  local drop = CreateFrame("Frame", nil, parent, "UIDropDownMenuTemplate")
+  drop:SetPoint("TOPLEFT", x - 14, y - 18)
+  UIDropDownMenu_SetWidth(drop, 190)
+
+  local labels = { male = "Male", female = "Female" }
+
+  UIDropDownMenu_Initialize(drop, function(self, level)
+    local function addOption(value, text)
+      local info = UIDropDownMenu_CreateInfo()
+      info.text = text
+      info.func = function()
+        onSet(value)
+        UIDropDownMenu_SetText(drop, text)
+      end
+      UIDropDownMenu_AddButton(info, level)
+    end
+    addOption("male", "Male")
+    addOption("female", "Female")
+  end)
+
+  UIDropDownMenu_SetText(drop, labels[currentMode] or "Male")
+  return drop, title
+end
+
 function SFA:RefreshOptionsPanel()
   if not self.options then return end
   local db = self.db
 if self.options.otherBuilderSpenderIndicator then self.options.otherBuilderSpenderIndicator:SetChecked(db.other and db.other.showBuilderSpenderIndicator ~= false) end
   if self.options.generalTitle then
     self.options.generalTitle:SetText("Simple Frame Assistant")
+  end
+  if self.options.generalVersion then
+    self.options.generalVersion:SetText("Version: " .. GetAddonVersion())
   end
   if self.options.generalSub then
     self.options.generalSub:SetText("Use /sfa as a shortcut to this page. Move unlocked blocks with Shift + drag.")
@@ -613,9 +652,16 @@ function SFA:CreateOptionsPanel()
 
   root.title = rootContent:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
   root.title:SetPoint("TOPLEFT", 18, -10)
+
+  root.version = rootContent:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  root.version:SetPoint("TOPLEFT", root.title, "BOTTOMLEFT", 0, -4)
+  root.version:SetTextColor(0.7, 0.7, 0.7)
+  root.version:SetText("Version: " .. GetAddonVersion())
+
   root.sub = rootContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  root.sub:SetPoint("TOPLEFT", root.title, "BOTTOMLEFT", 0, -6)
+  root.sub:SetPoint("TOPLEFT", root.version, "BOTTOMLEFT", 0, -6)
   root.sub:SetJustifyH("LEFT")
+  root.sub:SetText("Use /sfa as a shortcut to this page. Move unlocked blocks with Shift + drag.")
 
   local generalHeader = CreateSectionHeader(rootContent, "General", 18, -68)
   local locked = CreateCheckbox(rootContent, "Lock frame blocks (move with Shift + drag when unlocked)", 24, -104, self.db.locked, function(val)
@@ -701,22 +747,51 @@ function SFA:CreateOptionsPanel()
   otherTitle:SetText("Simple Frame Assistant")
   local otherSub = otherContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   otherSub:SetPoint("TOPLEFT", otherTitle, "BOTTOMLEFT", 0, -6)
-  otherSub:SetText("Other options.")
-  local otherHeader = CreateSectionHeader(otherContent, "Other", 18, -68)
+  otherSub:SetText("Smart Assist options.")
+  local otherHeader = CreateSectionHeader(otherContent, "Smart Assist", 18, -68)
   local otherQuestIndicator = CreateCheckbox(otherContent, "Show quest objective ! on nameplates", 24, -104, self.db.other and self.db.other.showQuestIndicator, function(val)
     self.db.other.showQuestIndicator = val
     self:RefreshQuestIndicators()
   end)
- local otherBuilderSpenderIndicator = CreateCheckbox(otherContent, "Show full builder-spender resource circle", 24, -140, self.db.other.showBuilderSpenderIndicator ~= false, function(val)
-  self.db.other.showBuilderSpenderIndicator = val
-  self:RefreshEnemyNameplateOverlays()
-end)
+  local otherBuilderSpenderIndicator = CreateCheckbox(otherContent, "Show full builder-spender resource circle", 24, -140, self.db.other.showBuilderSpenderIndicator ~= false, function(val)
+    self.db.other.showBuilderSpenderIndicator = val
+    self:RefreshEnemyNameplateOverlays()
+  end)
 
-  local otherTargetXMark = CreateCheckbox(otherContent, "Show X mark on enemy target frame", 24, -176, self.db.other and self.db.other.showTargetXMark, function(val)
+  self.db.other.resourceVoiceAlerts = self.db.other.resourceVoiceAlerts or { enabled = false, cooldown = 1.0, volume = 5 }
+  if self.db.other.resourceVoiceAlerts.cooldown == nil then self.db.other.resourceVoiceAlerts.cooldown = 1.0 end
+  if self.db.other.resourceVoiceAlerts.volume == nil then self.db.other.resourceVoiceAlerts.volume = 5 end
+  if self.db.other.resourceVoiceAlerts.voiceStyle ~= "female" then self.db.other.resourceVoiceAlerts.voiceStyle = "male" end
+
+  local otherResourceVoice = CreateCheckbox(otherContent, "Voice alert when builder-spender resource is full", 24, -176, self.db.other.resourceVoiceAlerts.enabled == true, function(val)
+    self.db.other.resourceVoiceAlerts.enabled = val
+    if val and SFA.PreviewFullResourceVoice then
+      SFA:PreviewFullResourceVoice()
+    end
+  end)
+  local resourceVoiceStyleDropDown = CreateResourceVoiceStyleDropDown(otherContent, 54, -212, self.db.other.resourceVoiceAlerts.voiceStyle or "male", function(val)
+    self.db.other.resourceVoiceAlerts.voiceStyle = (val == "female") and "female" or "male"
+    if SFA.PreviewFullResourceVoice then
+      SFA:PreviewFullResourceVoice()
+    end
+  end)
+
+  local resourceVoiceVolume = CreateSlider(otherContent, "Voice alert volume", 54, -276, 0, 10, 1, self.db.other.resourceVoiceAlerts.volume or 5, function(val)
+    self.db.other.resourceVoiceAlerts.volume = val
+    if SFA.PreviewFullResourceVoice then
+      SFA:PreviewFullResourceVoice()
+    end
+  end)
+
+  local resourceVoiceCooldown = CreateSlider(otherContent, "Voice alert cooldown", 54, -332, 0, 5, 0.5, self.db.other.resourceVoiceAlerts.cooldown or 1.0, function(val)
+    self.db.other.resourceVoiceAlerts.cooldown = val
+  end)
+
+  local otherTargetXMark = CreateCheckbox(otherContent, "Show X mark on enemy target frame", 24, -400, self.db.other and self.db.other.showTargetXMark, function(val)
     self.db.other.showTargetXMark = val
     self:RefreshGroup("enemy")
   end)
-  local otherCharacterGCD = CreateCheckbox(otherContent, "Show Estimated / One-Button GCD under Character window", 24, -212, self.db.other.showCharacterGCD ~= false, function(val)
+  local otherCharacterGCD = CreateCheckbox(otherContent, "Show Estimated / One-Button GCD under Character window", 24, -436, self.db.other.showCharacterGCD ~= false, function(val)
     self.db.other.showCharacterGCD = val
     if SFA_UpdateCharacterGCD then
       SFA_UpdateCharacterGCD()
@@ -729,11 +804,6 @@ end)
       end
     end
   end)
-  local otherHelp = otherContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  otherHelp:SetPoint("TOPLEFT", 24, -268)
-  otherHelp:SetWidth(760)
-  otherHelp:SetJustifyH("LEFT")
-  otherHelp:SetText("Shows a yellow ! on an NPC nameplate when the NPC is related to an active quest objective. You can also show Estimated GCD and One-Button GCD under the Character window.")
 
 local simulationPanel = CreateCanvasFrame(addonName .. "OptionsSimulation")
 local simulationContent = simulationPanel.content
@@ -903,13 +973,14 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
     local generalSubcategory = Settings.RegisterCanvasLayoutSubcategory(category, root, "General")
     Settings.RegisterCanvasLayoutSubcategory(category, friendlyPanel, "Friendly Frame")
     Settings.RegisterCanvasLayoutSubcategory(category, enemyPanel, "Enemy Frame")
-    Settings.RegisterCanvasLayoutSubcategory(category, otherPanel, "Other")
+    Settings.RegisterCanvasLayoutSubcategory(category, otherPanel, "Smart Assist")
     Settings.RegisterCanvasLayoutSubcategory(category, simulationPanel, "Simulation")
     self.settingsGeneralSubcategory = generalSubcategory
   end
 
   self.options = {
     generalTitle = root.title,
+    generalVersion = root.version,
     generalSub = root.sub,
     locked = locked,
     hideHeaders = hideHeaders,

@@ -43,6 +43,13 @@ try {
     Get-ChildItem -Path $sourcePath -Filter *.md | ForEach-Object {
         Copy-Item $_.FullName -Destination $tempFolder
     }
+	# Copy media folder with all contents
+	$mediaPath = Join-Path $sourcePath "media"
+	if (Test-Path $mediaPath) {
+		Copy-Item -Path $mediaPath -Destination (Join-Path $tempFolder "media") -Recurse -Force
+	} else {
+		Write-Warning "media folder not found"
+	}
 	
     # Copy Icon.tga
     $iconPath = Join-Path $sourcePath "Icon.tga"

@@ -19,6 +19,12 @@ SFA.defaults = {
     showTargetXMark = false,
     showCharacterGCD = true,
 	showBuilderSpenderIndicator = true,
+    resourceVoiceAlerts = {
+      enabled = false,
+      cooldown = 1.0,
+      volume = 5,
+      voiceStyle = "male",
+    },
   },
   simulation = {
     enabled = false,

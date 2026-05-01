@@ -26,6 +26,16 @@ local C_NamePlate = C_NamePlate
 local C_QuestLog = C_QuestLog
 local IsShiftKeyDown = IsShiftKeyDown
 
+local function GetAddonVersion()
+  if C_AddOns and C_AddOns.GetAddOnMetadata then
+    return C_AddOns.GetAddOnMetadata(addonName, "Version") or "Unknown"
+  end
+  if GetAddOnMetadata then
+    return GetAddOnMetadata(addonName, "Version") or "Unknown"
+  end
+  return "Unknown"
+end
+
 SFA.frames = { friendly = {}, enemy = {} }
 SFA.headers = {}
 SFA.pendingRefresh = false
@@ -336,24 +346,136 @@ local SFA_BUILDER_SPENDER_POWER = {
   EVOKER = 19,    -- Essence
 }
 
-function SFA:GetBuilderSpenderPowerType()
+local SFA_RESOURCE_VOICE_INFO = {
+  DRUID = { enum = "ComboPoints", fallback = 4, label = "COMBO FULL", file = "combo_full.ogg" },
+  ROGUE = { enum = "ComboPoints", fallback = 4, label = "COMBO FULL", file = "combo_full.ogg" },
+  PALADIN = { enum = "HolyPower", fallback = 9, label = "HOLY POWER FULL", file = "holy_power_full.ogg" },
+  MONK = { enum = "Chi", fallback = 12, label = "CHI FULL", file = "chi_full.ogg" },
+  WARLOCK = { enum = "SoulShards", fallback = 7, label = "SOUL SHARDS FULL", file = "soul_shards_full.ogg" },
+  EVOKER = { enum = "Essence", fallback = 19, label = "ESSENCE FULL", file = "essence_full.ogg" },
+}
+
+function SFA:GetBuilderSpenderResourceInfo()
   local _, classTag = UnitClass("player")
   if not classTag then return nil end
 
-  if Enum and Enum.PowerType then
-    local enumMap = {
-      DRUID = Enum.PowerType.ComboPoints,
-      ROGUE = Enum.PowerType.ComboPoints,
-      PALADIN = Enum.PowerType.HolyPower,
-      MONK = Enum.PowerType.Chi,
-      WARLOCK = Enum.PowerType.SoulShards,
-      EVOKER = Enum.PowerType.Essence,
-    }
+  local info = SFA_RESOURCE_VOICE_INFO[classTag]
+  if not info then return nil end
 
-    return enumMap[classTag]
+  local powerType = info.fallback
+  if Enum and Enum.PowerType and info.enum and Enum.PowerType[info.enum] then
+    powerType = Enum.PowerType[info.enum]
   end
 
-  return SFA_BUILDER_SPENDER_POWER[classTag]
+  return powerType, info
+end
+
+function SFA:GetBuilderSpenderPowerType()
+  local powerType = self:GetBuilderSpenderResourceInfo()
+  return powerType
+end
+
+function SFA:GetResourceVoiceVolumeFile(info)
+  if not (info and info.file) then return nil end
+
+  local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
+  local sliderVolume = tonumber(cfg and cfg.volume) or 5
+  sliderVolume = math.floor(sliderVolume + 0.5)
+
+  if sliderVolume < 0 then sliderVolume = 0 end
+  if sliderVolume > 10 then sliderVolume = 10 end
+  if sliderVolume == 0 then return nil, 0 end
+
+  -- PRO voice-pack logic: uses *_1.ogg and *_2.ogg variants.
+  -- Not random; it alternates predictably for less repetitive alerts.
+  local baseFile = info.file:gsub("%.ogg$", "")
+  self.resourceVoiceVariantIndex = (self.resourceVoiceVariantIndex == 1) and 2 or 1
+  local file = baseFile .. "_" .. tostring(self.resourceVoiceVariantIndex) .. ".ogg"
+
+  return file, sliderVolume
+end
+
+function SFA:GetResourceVoiceStyle()
+  local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
+  local style = cfg and cfg.voiceStyle or "male"
+  if style ~= "female" then
+    style = "male"
+  end
+  return style
+end
+
+function SFA:GetResourceVoiceLayerCount(sliderVolume)
+  sliderVolume = tonumber(sliderVolume) or 5
+  if sliderVolume <= 0 then return 0 end
+  if sliderVolume <= 3 then return 1 end
+  if sliderVolume <= 7 then return 2 end
+  return 3
+end
+
+function SFA:PlayResourceVoiceFile(ignoreFullCheck)
+  local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
+  if not (cfg and cfg.enabled) then return end
+  if not ignoreFullCheck and not self:IsBuilderSpenderFull() then return end
+
+  local powerType, info = self:GetBuilderSpenderResourceInfo()
+  local file, sliderVolume = self:GetResourceVoiceVolumeFile(info)
+  if not (powerType and file) then return end
+
+  local style = self:GetResourceVoiceStyle()
+  local path = [[Interface\AddOns\Simple_Frame_Assistant\media\]] .. style .. [[\]] .. file
+  local layers = self:GetResourceVoiceLayerCount(sliderVolume)
+  if layers <= 0 then return end
+
+  PlaySoundFile(path, "Master")
+
+  if layers >= 2 and C_Timer and C_Timer.After then
+    C_Timer.After(0.035, function()
+      PlaySoundFile(path, "Master")
+    end)
+  elseif layers >= 2 then
+    PlaySoundFile(path, "Master")
+  end
+
+  if layers >= 3 and C_Timer and C_Timer.After then
+    C_Timer.After(0.07, function()
+      PlaySoundFile(path, "Master")
+    end)
+  elseif layers >= 3 then
+    PlaySoundFile(path, "Master")
+  end
+end
+function SFA:PlayFullResourceVoiceReminder()
+  local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
+  if not (cfg and cfg.enabled) then return end
+  if not self:IsBuilderSpenderFull() then return end
+
+  local now = GetTime and GetTime() or 0
+  local cooldown = tonumber(cfg.cooldown) or 1.0
+  if cooldown < 0 then cooldown = 0 end
+  if self.lastResourceVoiceTime and (now - self.lastResourceVoiceTime) < cooldown then return end
+
+  self.lastResourceVoiceTime = now
+  self:PlayResourceVoiceFile(false)
+end
+
+function SFA:PreviewFullResourceVoice()
+  local now = GetTime and GetTime() or 0
+  if self.lastResourceVoicePreviewTime and (now - self.lastResourceVoicePreviewTime) < 0.35 then return end
+  self.lastResourceVoicePreviewTime = now
+  self:PlayResourceVoiceFile(true)
+end
+
+function SFA:CheckFullResourceVoiceOnReachFull()
+  local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
+  if not (cfg and cfg.enabled) then return end
+
+  local isFull = self:IsBuilderSpenderFull()
+  if isFull and not self.wasBuilderSpenderFull then
+    self.wasBuilderSpenderFull = true
+    self:PlayFullResourceVoiceReminder()
+  elseif not isFull then
+    self.wasBuilderSpenderFull = false
+  end
 end
 
 function SFA:IsBuilderSpenderFull()
@@ -804,6 +926,7 @@ function SFA:UpdateEnemyNameplateOverlays(unit)
     if frame.SFAComboOrb and self:ShouldShowComboCircle() then
       self:ApplyBuilderSpenderOrbVisual(frame.SFAComboOrb)
       frame.SFAComboOrb:Show()
+      self:CheckFullResourceVoiceOnReachFull()
     else
       HideComboOrb()
     end
@@ -2489,7 +2612,7 @@ function SFA:OnEvent(event, ...)
     self:CreateMinimapButton()
     self:RefreshQuestIndicators()
     self:ApplyBlizzardRaidFramesVisibility()
-    Print("Loaded. Type /sfa")
+    DEFAULT_CHAT_FRAME:AddMessage("|cff7cc6ffSFA Version " .. GetAddonVersion() .. ".|r Type /sfa")
     return
   end
 
@@ -2529,10 +2652,17 @@ function SFA:OnEvent(event, ...)
       self:UpdateNameplateQuestIndicator("mouseover")
     end
 
+elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
+  local unit = ...
+  if unit == "player" then
+    self:PlayFullResourceVoiceReminder()
+  end
+
 elseif event == "UNIT_POWER_UPDATE" or event == "UNIT_POWER_FREQUENT" then
   local unit = ...
   if unit == "player" then
     self:RefreshEnemyNameplateOverlays()
+    self:CheckFullResourceVoiceOnReachFull()
   end
   elseif event == "PLAYER_TARGET_CHANGED" or event == "ARENA_PREP_OPPONENT_SPECIALIZATIONS" or event == "ARENA_OPPONENT_UPDATE" or event == "UNIT_NAME_UPDATE" then
     if event == "PLAYER_TARGET_CHANGED" and UnitExists("target") then
@@ -2582,6 +2712,7 @@ function SFA:RegisterEvents()
   self.eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
   self.eventFrame:RegisterEvent("UNIT_POWER_UPDATE")
   self.eventFrame:RegisterEvent("UNIT_POWER_FREQUENT")
+  self.eventFrame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
   self.eventFrame:RegisterEvent("UNIT_HEALTH")
   self.eventFrame:RegisterEvent("UNIT_MAXHEALTH")
   self.eventFrame:RegisterEvent("UNIT_AURA")
