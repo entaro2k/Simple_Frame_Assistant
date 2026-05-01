@@ -18,6 +18,7 @@ SFA.defaults = {
     showQuestIndicator = false,
     showTargetXMark = false,
     showCharacterGCD = true,
+	showBuilderSpenderIndicator = true,
   },
   simulation = {
     enabled = false,

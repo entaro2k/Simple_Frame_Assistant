@@ -327,15 +327,67 @@ function SFA:IsQuestUnit(unit)
 end
 
 
+local SFA_BUILDER_SPENDER_POWER = {
+  DRUID = 4,      -- Combo Points
+  ROGUE = 4,      -- Combo Points
+  PALADIN = 9,    -- Holy Power
+  MONK = 12,      -- Chi
+  WARLOCK = 7,    -- Soul Shards
+  EVOKER = 19,    -- Essence
+}
 
-function SFA:ShouldShowComboCircle()
+function SFA:GetBuilderSpenderPowerType()
   local _, classTag = UnitClass("player")
-  if classTag ~= "DRUID" then
+  if not classTag then return nil end
+
+  if Enum and Enum.PowerType then
+    local enumMap = {
+      DRUID = Enum.PowerType.ComboPoints,
+      ROGUE = Enum.PowerType.ComboPoints,
+      PALADIN = Enum.PowerType.HolyPower,
+      MONK = Enum.PowerType.Chi,
+      WARLOCK = Enum.PowerType.SoulShards,
+      EVOKER = Enum.PowerType.Essence,
+    }
+
+    return enumMap[classTag]
+  end
+
+  return SFA_BUILDER_SPENDER_POWER[classTag]
+end
+
+function SFA:IsBuilderSpenderFull()
+  if not (self.db and self.db.other and self.db.other.showBuilderSpenderIndicator) then
     return false
   end
-  local comboType = (Enum and Enum.PowerType and Enum.PowerType.ComboPoints) or 4
-  local comboPoints = UnitPower("player", comboType)
-  return comboPoints and comboPoints >= 5
+
+  local powerType = self:GetBuilderSpenderPowerType()
+  if not powerType then return false end
+
+  local current = UnitPower("player", powerType) or 0
+  local maxPower = UnitPowerMax("player", powerType) or 0
+
+  if maxPower <= 0 then return false end
+
+  return current >= maxPower
+end
+
+function SFA:ShouldShowComboCircle()
+  return self:IsBuilderSpenderFull()
+end
+
+function SFA:ApplyBuilderSpenderOrbVisual(orb)
+  if not orb then return end
+
+  -- fixed clean red color
+  orb:SetVertexColor(1, 0.15, 0.15, 1)
+
+  if orb.SFAPulse then
+    orb.SFAPulse:Stop()
+    orb.SFAPulse = nil
+  end
+
+  orb:SetScale(1)
 end
 
 function SFA:GetNameplateAnchor(frame)
@@ -722,6 +774,17 @@ function SFA:UpdateEnemyNameplateOverlays(unit)
     end
   end
 
+	local function HideComboOrb()
+	if frame.SFAComboOrb then
+    if frame.SFAComboOrb.SFAPulse then
+      frame.SFAComboOrb.SFAPulse:Stop()
+      frame.SFAComboOrb.SFAPulse = nil
+    end
+    frame.SFAComboOrb:SetScale(1)
+    frame.SFAComboOrb:Hide()
+	end
+	end
+
   if shouldShow then
     local anchor = self:GetNameplateAnchor(frame)
     if anchor then
@@ -738,18 +801,17 @@ function SFA:UpdateEnemyNameplateOverlays(unit)
     if frame.SFAComboCircle then frame.SFAComboCircle:Hide() end
     if frame.SFAComboDot then frame.SFAComboDot:Hide() end
 
-    if frame.SFAComboOrb then
-      if self:ShouldShowComboCircle() then
-        frame.SFAComboOrb:Show()
-      else
-        frame.SFAComboOrb:Hide()
-      end
+    if frame.SFAComboOrb and self:ShouldShowComboCircle() then
+      self:ApplyBuilderSpenderOrbVisual(frame.SFAComboOrb)
+      frame.SFAComboOrb:Show()
+    else
+      HideComboOrb()
     end
   else
     xMark:Hide()
     if frame.SFAComboCircle then frame.SFAComboCircle:Hide() end
     if frame.SFAComboDot then frame.SFAComboDot:Hide() end
-    if frame.SFAComboOrb then frame.SFAComboOrb:Hide() end
+    HideComboOrb()
   end
 end
 
@@ -2467,9 +2529,9 @@ function SFA:OnEvent(event, ...)
       self:UpdateNameplateQuestIndicator("mouseover")
     end
 
-elseif event == "UNIT_POWER_UPDATE" then
-  local unit, powerType = ...
-  if unit == "player" and (powerType == "COMBO_POINTS" or powerType == "COMBOPOINTS") then
+elseif event == "UNIT_POWER_UPDATE" or event == "UNIT_POWER_FREQUENT" then
+  local unit = ...
+  if unit == "player" then
     self:RefreshEnemyNameplateOverlays()
   end
   elseif event == "PLAYER_TARGET_CHANGED" or event == "ARENA_PREP_OPPONENT_SPECIALIZATIONS" or event == "ARENA_OPPONENT_UPDATE" or event == "UNIT_NAME_UPDATE" then
@@ -2519,6 +2581,7 @@ function SFA:RegisterEvents()
   self.eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
   self.eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
   self.eventFrame:RegisterEvent("UNIT_POWER_UPDATE")
+  self.eventFrame:RegisterEvent("UNIT_POWER_FREQUENT")
   self.eventFrame:RegisterEvent("UNIT_HEALTH")
   self.eventFrame:RegisterEvent("UNIT_MAXHEALTH")
   self.eventFrame:RegisterEvent("UNIT_AURA")

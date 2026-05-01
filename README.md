@@ -1,4 +1,3 @@
-
 # Simple Frame Assistant (SFA)
 
 Lightweight PvP / PvE helper addon for World of Warcraft  
@@ -10,18 +9,21 @@ Focused on clarity, speed, and minimal UI clutter.
 
 ### 🟢 Friendly Frames
 - Solo → shows only player
-- Party → shows player + party members
-- Click-cast macros (Left / Right / Middle)
-- Buff / debuff display
-- Optional class color health bar
+- Party / Raid → automatically displays group members
+- Clean vertical / grid layout for large groups
+- Click-cast macros (Left / Right / Middle / extra buttons)
+- Buffs (on bar) & debuffs (below bar)
+- Optional class-colored health bars
+- Healer (+) and Tank (shield) indicators
 
 ---
 
 ### 🔴 Enemy Frames
-- Clean enemy tracking
-- Target highlighting
+- Arena enemy tracking (auto slots)
+- World → shows current hostile target only
+- Target highlight (border)
 - Click-cast support (Cyclone, Roots, etc.)
-- Visual clarity in combat
+- Class-colored health bars (optional)
 
 ---
 
@@ -29,32 +31,38 @@ Focused on clarity, speed, and minimal UI clutter.
 
 #### ❌ Target Marker
 - Red **X above nameplate** for current target
-- Highly visible in BG / Arena chaos
+- Optional builder–spender orb when resource is full
 
 #### ❗ Quest Indicator
-- Yellow **! above NPCs** involved in quests
-- Automatically detected via tooltip
+- Yellow **! above NPCs** related to active quests or scenarios
+- Smart detection using tooltip data (safe, no taint)
 
 ---
 
 ### ⚔️ Simulation Mode
-- Test UI without combat
-- Modes:
-  - Arena 3v3
-  - World
-  - Dungeon
-- Simulates:
-  - roles (healer / dps / tank)
-  - buffs & debuffs
-  - real layout behavior
+Test the UI without combat.
+
+Available modes:
+- Arena 3v3
+- Dungeon (5-man)
+- Raid (10 / 25)
+- World
+
+Simulates:
+- roles (healer / tank / dps)
+- buffs & debuffs
+- realistic layouts
+- target states
 
 ---
 
 ### ⚙️ Options Menu
-Available in:
-ESC → Options → AddOns → Simple Frame Assistant
 
-Submenus:
+Available in:
+ESC → Options → AddOns → Simple Frame Assistant  
+or via command: `/sfa`
+
+Sections:
 - General
 - Friendly Frame
 - Enemy Frame
@@ -63,37 +71,11 @@ Submenus:
 
 ---
 
-## 🎮 Commands
+### 🔵 Other Features
 
-/sfa → open settings
-
----
-
-## 📦 Installation
-
-1. Download the addon
-2. Extract folder:
-   Simple_Frame_Assistant
-3. Place into:
-   World of Warcraft/_retail_/Interface/AddOns/
-
-Final structure:
-AddOns/
- └── Simple_Frame_Assistant/
-
-4. Start game and /reload
+- Builder–spender resource indicator (combo / holy power / etc.)
+- Enemy target **X marker**
+- Quest objective detection on nameplates
+- Estimated GCD display in Character window
 
 ---
-
-## 🧠 Philosophy
-
-- Minimalist
-- Combat-focused
-- No unnecessary UI clutter
-- Fast readability
-
----
-
-## 👤 Author
-
-En Taro + ChatGPT

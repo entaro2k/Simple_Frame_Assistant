@@ -404,7 +404,7 @@ end
 function SFA:RefreshOptionsPanel()
   if not self.options then return end
   local db = self.db
-
+if self.options.otherBuilderSpenderIndicator then self.options.otherBuilderSpenderIndicator:SetChecked(db.other and db.other.showBuilderSpenderIndicator ~= false) end
   if self.options.generalTitle then
     self.options.generalTitle:SetText("Simple Frame Assistant")
   end
@@ -707,6 +707,11 @@ function SFA:CreateOptionsPanel()
     self.db.other.showQuestIndicator = val
     self:RefreshQuestIndicators()
   end)
+ local otherBuilderSpenderIndicator = CreateCheckbox(otherContent, "Show full builder-spender resource circle", 24, -140, self.db.other.showBuilderSpenderIndicator ~= false, function(val)
+  self.db.other.showBuilderSpenderIndicator = val
+  self:RefreshEnemyNameplateOverlays()
+end)
+
   local otherTargetXMark = CreateCheckbox(otherContent, "Show X mark on enemy target frame", 24, -176, self.db.other and self.db.other.showTargetXMark, function(val)
     self.db.other.showTargetXMark = val
     self:RefreshGroup("enemy")
@@ -725,7 +730,7 @@ function SFA:CreateOptionsPanel()
     end
   end)
   local otherHelp = otherContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  otherHelp:SetPoint("TOPLEFT", 24, -292)
+  otherHelp:SetPoint("TOPLEFT", 24, -268)
   otherHelp:SetWidth(760)
   otherHelp:SetJustifyH("LEFT")
   otherHelp:SetText("Shows a yellow ! on an NPC nameplate when the NPC is related to an active quest objective. You can also show Estimated GCD and One-Button GCD under the Character window.")
@@ -912,6 +917,7 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
     otherQuestIndicator = otherQuestIndicator,
     otherTargetXMark = otherTargetXMark,
     otherCharacterGCD = otherCharacterGCD,
+	otherBuilderSpenderIndicator = otherBuilderSpenderIndicator,
     simulationEnabled = simulationEnabled,
     simRowWorld = simRowWorld,
     simRowWorldX = simRowWorldX,
@@ -941,6 +947,7 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
     friendlyMyHotsOnly = friendlyMyHotsOnly,
     friendlyHideBlizzardRaid = friendlyHideBlizzardRaid,
     targetColorDropDown = targetDropDown,
+	
   }
 
   self:RefreshOptionsPanel()
