@@ -1,2 +1,0 @@
-SFA 0.20.50 clean voice pack.
-Only male and female voice styles are included. Arena announcer was removed.
