@@ -338,6 +338,244 @@ local function GetSpellNameSafe(spellID)
   return nil
 end
 
+
+local function TrimText(text)
+  text = tostring(text or "")
+  return (text:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local spellAutocompleteCache = nil
+local spellAutocompleteExact = nil
+local spellAutocompleteSeen = nil
+
+local function AddSpellAutocompleteEntry(spellID, spellName)
+  if not spellID or not spellName or spellName == "" then return end
+  spellAutocompleteCache = spellAutocompleteCache or {}
+  spellAutocompleteExact = spellAutocompleteExact or {}
+  spellAutocompleteSeen = spellAutocompleteSeen or {}
+
+  local id = tonumber(spellID)
+  if not id or spellAutocompleteSeen[id] then return end
+  spellAutocompleteSeen[id] = true
+
+  local lower = string.lower(spellName)
+  if not spellAutocompleteExact[lower] then
+    spellAutocompleteExact[lower] = id
+  end
+
+  spellAutocompleteCache[#spellAutocompleteCache + 1] = {
+    id = id,
+    name = spellName,
+    search = lower,
+  }
+end
+
+local function BuildSpellAutocompleteCache()
+  if spellAutocompleteCache then return end
+  spellAutocompleteCache = {}
+  spellAutocompleteExact = {}
+  spellAutocompleteSeen = {}
+
+  local seen = {}
+  local function add(id, name)
+    id = tonumber(id)
+    if not id or seen[id] then return end
+    seen[id] = true
+    AddSpellAutocompleteEntry(id, name or GetSpellNameSafe(id))
+  end
+
+  if C_SpellBook and C_SpellBook.GetNumSpellBookSkillLines and C_SpellBook.GetSpellBookSkillLineInfo then
+    local okLines, lineCount = pcall(C_SpellBook.GetNumSpellBookSkillLines)
+    if okLines and tonumber(lineCount) then
+      for lineIndex = 1, lineCount do
+        local okInfo, lineInfo = pcall(C_SpellBook.GetSpellBookSkillLineInfo, lineIndex)
+        local offset = lineInfo and (lineInfo.itemIndexOffset or lineInfo.offset)
+        local numSlots = lineInfo and (lineInfo.numSpellBookItems or lineInfo.numSlots)
+        if okInfo and tonumber(offset) and tonumber(numSlots) then
+          for slot = offset + 1, offset + numSlots do
+            local name, spellID
+            if C_SpellBook.GetSpellBookItemName then
+              local okName, n = pcall(C_SpellBook.GetSpellBookItemName, slot, Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player or 0)
+              if okName then name = n end
+            end
+            if C_SpellBook.GetSpellBookItemInfo then
+              local okItem, itemInfo = pcall(C_SpellBook.GetSpellBookItemInfo, slot, Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player or 0)
+              if okItem and itemInfo then spellID = itemInfo.spellID or itemInfo.actionID end
+            end
+            if not spellID and name and C_Spell and C_Spell.GetSpellInfo then
+              local okSpell, info = pcall(C_Spell.GetSpellInfo, name)
+              if okSpell and info then spellID = info.spellID end
+            end
+            add(spellID, name)
+          end
+        end
+      end
+    end
+  end
+
+  if GetNumSpellTabs and GetSpellTabInfo and GetSpellBookItemName then
+    local okTabs, tabs = pcall(GetNumSpellTabs)
+    if okTabs and tonumber(tabs) then
+      for tab = 1, tabs do
+        local okTab, _, _, offset, numSlots = pcall(GetSpellTabInfo, tab)
+        if okTab and tonumber(offset) and tonumber(numSlots) then
+          for slot = offset + 1, offset + numSlots do
+            local okName, name = pcall(GetSpellBookItemName, slot, BOOKTYPE_SPELL or "spell")
+            if okName and name then
+              local spellID
+              if GetSpellInfo then
+                local okSpell, _, _, _, _, _, id = pcall(GetSpellInfo, name)
+                if okSpell then spellID = id end
+              end
+              add(spellID, name)
+            end
+          end
+        end
+      end
+    end
+  end
+
+  table.sort(spellAutocompleteCache, function(a, b)
+    if a.name == b.name then return a.id < b.id end
+    return a.name < b.name
+  end)
+end
+
+
+local function AddActivePlayerAurasToAutocompleteCache()
+  BuildSpellAutocompleteCache()
+  if not UnitExists or not UnitExists("player") then return end
+  if not C_UnitAuras or not C_UnitAuras.GetAuraDataByIndex then return end
+
+  local function scan(filter)
+    for i = 1, 80 do
+      local ok, aura = pcall(C_UnitAuras.GetAuraDataByIndex, "player", i, filter)
+      if not ok or not aura then break end
+      local spellID = aura.spellId or aura.spellID
+      local spellName = aura.name or GetSpellNameSafe(spellID)
+      AddSpellAutocompleteEntry(spellID, spellName)
+    end
+  end
+
+  scan("HELPFUL")
+  scan("HARMFUL")
+end
+
+local function ResolveSpellInput(text)
+  text = TrimText(text)
+  if text == "" then return nil end
+
+  local numericID = tonumber(text)
+  if numericID then
+    return numericID, GetSpellNameSafe(numericID)
+  end
+
+  if C_Spell and C_Spell.GetSpellInfo then
+    local ok, info = pcall(C_Spell.GetSpellInfo, text)
+    if ok and info and info.spellID then
+      return tonumber(info.spellID), info.name
+    end
+  end
+
+  if GetSpellInfo then
+    local ok, name, _, _, _, _, spellID = pcall(GetSpellInfo, text)
+    if ok and spellID then
+      return tonumber(spellID), name
+    end
+  end
+
+  AddActivePlayerAurasToAutocompleteCache()
+  local exactID = spellAutocompleteExact and spellAutocompleteExact[string.lower(text)]
+  if exactID then
+    return exactID, GetSpellNameSafe(exactID)
+  end
+
+  return nil
+end
+
+local function CreateSpellAutocomplete(parent, input)
+  local box = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+  box:SetPoint("TOPLEFT", input, "BOTTOMLEFT", 0, -3)
+  box:SetSize(300, 104)
+  box:SetFrameStrata("DIALOG")
+  box:SetFrameLevel((input:GetFrameLevel() or 1) + 10)
+  box:SetBackdrop({
+    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true,
+    tileSize = 16,
+    edgeSize = 12,
+    insets = { left = 3, right = 3, top = 3, bottom = 3 },
+  })
+  box:SetBackdropColor(0.04, 0.04, 0.04, 0.95)
+  box:Hide()
+
+  box.rows = {}
+  for i = 1, 5 do
+    local row = CreateFrame("Button", nil, box)
+    row:SetSize(286, 18)
+    row:SetPoint("TOPLEFT", 7, -7 - ((i - 1) * 19))
+    row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    row.text:SetPoint("LEFT", 4, 0)
+    row.text:SetJustifyH("LEFT")
+    row:SetScript("OnClick", function(self)
+      if self.spellID then
+        input:SetText(tostring(self.spellID))
+        input.spellNameHint:SetText(self.spellName or "")
+        box:Hide()
+        input:SetFocus()
+      end
+    end)
+    row:Hide()
+    box.rows[i] = row
+  end
+
+  function box:Refresh(text)
+    text = TrimText(text)
+    if text == "" or tonumber(text) or #text < 2 then
+      self:Hide()
+      return
+    end
+
+    AddActivePlayerAurasToAutocompleteCache()
+    local query = string.lower(text)
+    local results = {}
+    local used = {}
+
+    for _, entry in ipairs(spellAutocompleteCache or {}) do
+      if entry.search == query and not used[entry.id] then
+        results[#results + 1] = entry
+        used[entry.id] = true
+      end
+    end
+    for _, entry in ipairs(spellAutocompleteCache or {}) do
+      if #results >= 5 then break end
+      if not used[entry.id] and entry.search:find(query, 1, true) then
+        results[#results + 1] = entry
+        used[entry.id] = true
+      end
+    end
+
+    for i, row in ipairs(self.rows) do
+      local entry = results[i]
+      if entry then
+        row.spellID = entry.id
+        row.spellName = entry.name
+        row.text:SetText(string.format("%s  |cff888888(%d)|r", entry.name, entry.id))
+        row:Show()
+      else
+        row.spellID = nil
+        row.spellName = nil
+        row:Hide()
+      end
+    end
+
+    self:SetShown(#results > 0)
+  end
+
+  return box
+end
+
 local function CreateCanvasFrame(name)
   local frame = CreateFrame("Frame", name)
   frame:SetSize(900, 760)
@@ -690,29 +928,54 @@ function SFA:CreateOptionsPanel()
   blacklistHelp:SetPoint("TOPLEFT", 24, blacklistTop - 28)
   blacklistHelp:SetWidth(780)
   blacklistHelp:SetJustifyH("LEFT")
-  blacklistHelp:SetText("Add a buff or debuff spell ID to hide it from SFA. Tip: Shift + Left Click an aura icon to add it instantly.")
+  blacklistHelp:SetText("Add a buff/debuff by spell ID or exact spell name. While typing, suggestions include your spellbook and active external auras currently on your character. Tip: Shift + Left Click an aura icon to add it instantly.")
 
   local blacklistInput = CreateFrame("EditBox", nil, rootContent, "InputBoxTemplate")
-  blacklistInput:SetSize(120, 24)
+  blacklistInput:SetSize(220, 24)
   blacklistInput:SetPoint("TOPLEFT", 24, blacklistTop - 62)
   blacklistInput:SetAutoFocus(false)
-  blacklistInput:SetNumeric(true)
+  blacklistInput:SetNumeric(false)
 
-  local blacklistAdd = CreateButton(rootContent, "Add ID", 154, blacklistTop - 60, 70, 24, function()
-    local text = blacklistInput:GetText()
-    local spellID = tonumber(text)
+  local blacklistHint = rootContent:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  blacklistHint:SetPoint("LEFT", blacklistInput, "RIGHT", 10, 0)
+  blacklistHint:SetWidth(260)
+  blacklistHint:SetJustifyH("LEFT")
+  blacklistHint:SetText("Spell ID or name")
+  blacklistInput.spellNameHint = blacklistHint
+
+  local autocomplete = CreateSpellAutocomplete(rootContent, blacklistInput)
+
+  local blacklistAdd = CreateButton(rootContent, "Add", 254, blacklistTop - 60, 70, 24, function()
+    local spellID, spellName = ResolveSpellInput(blacklistInput:GetText())
     if spellID then
       SFA:AddBuffToBlacklist(spellID)
       blacklistInput:SetText("")
+      blacklistHint:SetText("Spell ID or name")
+      autocomplete:Hide()
       blacklistInput:ClearFocus()
     else
-      SFA.Print("Enter a numeric spell ID.")
+      SFA.Print("Enter a valid spell ID or exact spell name.")
+      blacklistHint:SetText("No spell found")
     end
+  end)
+
+  blacklistInput:SetScript("OnTextChanged", function(self)
+    local text = self:GetText()
+    local spellID, spellName = ResolveSpellInput(text)
+    if spellID and spellName then
+      blacklistHint:SetText(string.format("%s (%d)", spellName, spellID))
+    else
+      blacklistHint:SetText("Spell ID or name")
+    end
+    autocomplete:Refresh(text)
+  end)
+  blacklistInput:SetScript("OnEscapePressed", function(self)
+    autocomplete:Hide()
+    self:ClearFocus()
   end)
   blacklistInput:SetScript("OnEnterPressed", function(self)
     blacklistAdd:Click()
   end)
-
   local blacklistEmpty = rootContent:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
   blacklistEmpty:SetPoint("TOPLEFT", 24, blacklistTop - 96)
   blacklistEmpty:SetText("No blacklisted aura IDs yet.")
