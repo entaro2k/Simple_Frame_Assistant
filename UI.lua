@@ -325,15 +325,54 @@ local function CreateSectionHeader(parent, text, x, y)
   return title
 end
 
+local function NormalizeSafeString(value)
+  -- Returns a normal Lua string copy, or nil if Blizzard marks it as secret.
+  -- IMPORTANT: never call tostring(), lower(), format(), concat, SetText, or compare
+  -- on the raw value outside this pcall.
+  local ok, text = pcall(function()
+    if type(value) ~= "string" or value == "" then return nil end
+    return "" .. value
+  end)
+  if ok and type(text) == "string" and text ~= "" then return text end
+  return nil
+end
+
+local function NormalizeSafeSpellID(value)
+  -- Secret numbers can also explode on tostring/string.format or as table keys.
+  -- Convert through string.format inside pcall, then tonumber the copied string.
+  local ok, text = pcall(function()
+    if not value then return nil end
+    local n = tonumber(value)
+    if not n then return nil end
+    return string.format("%d", n)
+  end)
+  if ok and text then return tonumber(text) end
+  return nil
+end
+
 local function GetSpellNameSafe(spellID)
-  if not spellID then return nil end
+  local safeID = NormalizeSafeSpellID(spellID)
+  if not safeID then return nil end
   if C_Spell and C_Spell.GetSpellName then
-    local ok, name = pcall(C_Spell.GetSpellName, spellID)
-    if ok and name and name ~= "" then return name end
+    local ok, name = pcall(C_Spell.GetSpellName, safeID)
+    if ok then
+      name = NormalizeSafeString(name)
+      if name then return name end
+    end
+  end
+  if C_Spell and C_Spell.GetSpellInfo then
+    local ok, info = pcall(C_Spell.GetSpellInfo, safeID)
+    if ok and info then
+      local name = NormalizeSafeString(info.name)
+      if name then return name end
+    end
   end
   if GetSpellInfo then
-    local ok, name = pcall(GetSpellInfo, spellID)
-    if ok and name and name ~= "" then return name end
+    local ok, name = pcall(GetSpellInfo, safeID)
+    if ok then
+      name = NormalizeSafeString(name)
+      if name then return name end
+    end
   end
   return nil
 end
@@ -349,23 +388,40 @@ local spellAutocompleteExact = nil
 local spellAutocompleteSeen = nil
 
 local function AddSpellAutocompleteEntry(spellID, spellName)
-  if not spellID or not spellName or spellName == "" then return end
+  local id = NormalizeSafeSpellID(spellID)
+  if not id then return end
+
+  -- Use a safe copied name only. In RBG/arena preparation, both aura names and
+  -- even spell API names may be secret strings. If the name is secret, skip the
+  -- name-based autocomplete entry instead of creating a "Spell <id>" fallback,
+  -- because even converting secret values for display can taint.
+  local name = GetSpellNameSafe(id) or NormalizeSafeString(spellName)
+  if not name then return end
+
+  local okName, lower = pcall(function()
+    return string.lower(name)
+  end)
+  if not okName or not lower or lower == "" then return end
+
+  if SFA and SFA.db then
+    SFA.db.spellNameCache = SFA.db.spellNameCache or {}
+    SFA.db.spellNameCache[id] = name
+  end
+
   spellAutocompleteCache = spellAutocompleteCache or {}
   spellAutocompleteExact = spellAutocompleteExact or {}
   spellAutocompleteSeen = spellAutocompleteSeen or {}
 
-  local id = tonumber(spellID)
-  if not id or spellAutocompleteSeen[id] then return end
+  if spellAutocompleteSeen[id] then return end
   spellAutocompleteSeen[id] = true
 
-  local lower = string.lower(spellName)
   if not spellAutocompleteExact[lower] then
     spellAutocompleteExact[lower] = id
   end
 
   spellAutocompleteCache[#spellAutocompleteCache + 1] = {
     id = id,
-    name = spellName,
+    name = name,
     search = lower,
   }
 end
@@ -378,10 +434,17 @@ local function BuildSpellAutocompleteCache()
 
   local seen = {}
   local function add(id, name)
-    id = tonumber(id)
+    id = NormalizeSafeSpellID(id)
     if not id or seen[id] then return end
     seen[id] = true
     AddSpellAutocompleteEntry(id, name or GetSpellNameSafe(id))
+  end
+
+  -- Names learned safely outside secure PvP contexts remain searchable later in RBG/arena prep.
+  if SFA and SFA.db and type(SFA.db.spellNameCache) == "table" then
+    for cachedID, cachedName in pairs(SFA.db.spellNameCache) do
+      add(cachedID, cachedName)
+    end
   end
 
   if C_SpellBook and C_SpellBook.GetNumSpellBookSkillLines and C_SpellBook.GetSpellBookSkillLineInfo then
@@ -435,10 +498,8 @@ local function BuildSpellAutocompleteCache()
     end
   end
 
-  table.sort(spellAutocompleteCache, function(a, b)
-    if a.name == b.name then return a.id < b.id end
-    return a.name < b.name
-  end)
+  -- Keep insertion order. Avoid table.sort string comparisons here because
+  -- instanced PvP can mark some values as secret during preparation.
 end
 
 
@@ -447,13 +508,21 @@ local function AddActivePlayerAurasToAutocompleteCache()
   if not UnitExists or not UnitExists("player") then return end
   if not C_UnitAuras or not C_UnitAuras.GetAuraDataByIndex then return end
 
+  -- Rated BG / arena preparation can expose secret aura *names*.
+  -- We still scan active player auras for autocomplete, but we only read spell IDs
+  -- and resolve the display name later through spell APIs. Never use aura.name here.
+
   local function scan(filter)
     for i = 1, 80 do
       local ok, aura = pcall(C_UnitAuras.GetAuraDataByIndex, "player", i, filter)
       if not ok or not aura then break end
-      local spellID = aura.spellId or aura.spellID
-      local spellName = aura.name or GetSpellNameSafe(spellID)
-      AddSpellAutocompleteEntry(spellID, spellName)
+      local okID, rawSpellID = pcall(function() return aura.spellId or aura.spellID end)
+      local spellID = okID and NormalizeSafeSpellID(rawSpellID) or nil
+      if spellID then
+        -- Use only a safe copied numeric ID from aura data; resolve/display name only
+        -- if the spell API returns a normal non-secret string.
+        AddSpellAutocompleteEntry(spellID, GetSpellNameSafe(spellID))
+      end
     end
   end
 
@@ -465,7 +534,7 @@ local function ResolveSpellInput(text)
   text = TrimText(text)
   if text == "" then return nil end
 
-  local numericID = tonumber(text)
+  local numericID = NormalizeSafeSpellID(text)
   if numericID then
     return numericID, GetSpellNameSafe(numericID)
   end
@@ -473,14 +542,16 @@ local function ResolveSpellInput(text)
   if C_Spell and C_Spell.GetSpellInfo then
     local ok, info = pcall(C_Spell.GetSpellInfo, text)
     if ok and info and info.spellID then
-      return tonumber(info.spellID), info.name
+      local safeID = NormalizeSafeSpellID(info.spellID)
+      if safeID then return safeID, NormalizeSafeString(info.name) or GetSpellNameSafe(safeID) end
     end
   end
 
   if GetSpellInfo then
     local ok, name, _, _, _, _, spellID = pcall(GetSpellInfo, text)
     if ok and spellID then
-      return tonumber(spellID), name
+      local safeID = NormalizeSafeSpellID(spellID)
+      if safeID then return safeID, NormalizeSafeString(name) or GetSpellNameSafe(safeID) end
     end
   end
 
@@ -928,7 +999,7 @@ function SFA:CreateOptionsPanel()
   blacklistHelp:SetPoint("TOPLEFT", 24, blacklistTop - 28)
   blacklistHelp:SetWidth(780)
   blacklistHelp:SetJustifyH("LEFT")
-  blacklistHelp:SetText("Add a buff/debuff by spell ID or exact spell name. While typing, suggestions include your spellbook and active external auras currently on your character. Tip: Shift + Left Click an aura icon to add it instantly.")
+  blacklistHelp:SetText("Add a buff/debuff by spell ID or exact spell name. Suggestions include your spellbook plus active external auras when Blizzard exposes a safe name; learned names are cached for PvP prep. Tip: Shift + Left Click an aura icon to add it instantly.")
 
   local blacklistInput = CreateFrame("EditBox", nil, rootContent, "InputBoxTemplate")
   blacklistInput:SetSize(220, 24)

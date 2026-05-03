@@ -129,3 +129,15 @@ Sections:
 - Voice alerts use custom `.ogg` files (user-replaceable)
 
 
+
+
+## Changelog v0.21.25
+- Clean GCD calculation from Blizzard numeric haste APIs.
+- Removed Character Panel/PaperDoll text parsing for GCD.
+- Avoids n/a display and UI stat-frame hacks.
+
+## Changelog v0.21.26
+- Reworked Character Panel GCD display to avoid fragile UI/regex/PaperDoll parsing.
+- Uses real engine GCD cooldown when available, safe haste API calculation otherwise.
+- Removes `n/a` fallback; shows saved/base GCD when PvP prep does not expose live values.
+- Safer for Arena/BG/RBG preparation with fewer taint-prone reads.

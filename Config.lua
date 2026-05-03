@@ -9,6 +9,7 @@ SFA.defaults = {
     height = 940,
   },
   buffBlacklist = {},
+  spellNameCache = {},
   hideHeaders = false,
   minimap = {
     enabled = true,

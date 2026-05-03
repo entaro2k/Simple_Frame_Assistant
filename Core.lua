@@ -2797,57 +2797,285 @@ end
 
 
 -- === SFA GCD Stats (Character Frame) ===
-local function SFA_UpdateCharacterGCD()
-    if not CharacterFrame or not CharacterFrame:IsShown() then return end
+-- v0.21.31: based on v0.21.27; no Haste display and no Character GCD text in combat / Arena / BG.
+-- This avoids PvP-instance secret values entirely. The Character panel already shows Haste.
+local SFA_GCDText = SFA_GCDText
+local SFA_GCD_SPELL_ID = 61304
+local SFA_BASE_GCD = 1.5
+local SFA_MIN_GCD = 0.75
+local SFA_lastGCD = nil
+local SFA_lastHaste = nil
+local SFA_lastSource = nil
+local SFA_gcdPendingUntil = 0
+
+local function SFA_Now()
+    if type(GetTime) == "function" then
+        local ok, t = pcall(GetTime)
+        if ok and type(t) == "number" then return t end
+    end
+    return 0
+end
+
+local function SFA_IsGCDPending()
+    return SFA_gcdPendingUntil and SFA_gcdPendingUntil > SFA_Now()
+end
+
+local function SFA_ClearGCDCache(reason)
+    SFA_lastGCD = nil
+    SFA_lastHaste = nil
+    SFA_lastSource = reason or "refreshing"
+end
+
+local function SFA_SafeNumber(value)
+    local ok, n = pcall(function()
+        if type(value) ~= "number" then return nil end
+        if value ~= value then return nil end
+        if value < 0 or value > 1000 then return nil end
+        return value
+    end)
+    if ok then return n end
+    return nil
+end
+
+local function SFA_SafeCall(fn, ...)
+    if type(fn) ~= "function" then return nil end
+    local ok, a, b, c, d = pcall(fn, ...)
+    if ok then return a, b, c, d end
+    return nil
+end
+
+local function SFA_IsRestrictedForGCDDisplay()
+    -- Hard stop before reading any stat/cooldown APIs that may return secret values in PvP instances.
+    local okCombat, inCombat = pcall(function()
+        return (type(InCombatLockdown) == "function" and InCombatLockdown()) or (type(UnitAffectingCombat) == "function" and UnitAffectingCombat("player"))
+    end)
+    if okCombat and inCombat then return true end
+
+    local okInstance, inInstance, instanceType = pcall(IsInInstance)
+    if okInstance and inInstance and (instanceType == "arena" or instanceType == "pvp") then
+        return true
+    end
+
+    return false
+end
+
+local function SFA_HideGCDText()
+    if SFA_GCDText then
+        SFA_GCDText:SetText("")
+        SFA_GCDText:Hide()
+    end
+end
+
+local function SFA_GCDFromHaste(hastePercent)
+    local haste = SFA_SafeNumber(hastePercent)
+    if not haste then return nil end
+    local ok, gcd = pcall(function()
+        return math.max(SFA_MIN_GCD, SFA_BASE_GCD / (1 + haste / 100))
+    end)
+    if ok then return SFA_SafeNumber(gcd) end
+    return nil
+end
+
+local function SFA_ReadEngineGCD()
+    local start, duration
+
+    if C_Spell and type(C_Spell.GetSpellCooldown) == "function" then
+        local info = SFA_SafeCall(C_Spell.GetSpellCooldown, SFA_GCD_SPELL_ID)
+        if type(info) == "table" then
+            start = info.startTime
+            duration = info.duration
+        end
+    end
+
+    if not duration and type(GetSpellCooldown) == "function" then
+        start, duration = SFA_SafeCall(GetSpellCooldown, SFA_GCD_SPELL_ID)
+    end
+
+    duration = SFA_SafeNumber(duration)
+    if duration and duration >= SFA_MIN_GCD and duration <= SFA_BASE_GCD + 0.10 then
+        return duration
+    end
+    return nil
+end
+
+local function SFA_ReadSafeHaste()
+    local value
+
+    if type(GetHaste) == "function" then
+        value = SFA_SafeNumber(SFA_SafeCall(GetHaste))
+        if value then return value, "GetHaste" end
+    end
+
+    if C_PaperDollInfo and type(C_PaperDollInfo.GetHaste) == "function" then
+        value = SFA_SafeNumber(SFA_SafeCall(C_PaperDollInfo.GetHaste))
+        if value then return value, "C_PaperDollInfo.GetHaste" end
+    end
+
+    if type(UnitSpellHaste) == "function" then
+        value = SFA_SafeNumber(SFA_SafeCall(UnitSpellHaste, "player"))
+        if value then return value, "UnitSpellHaste" end
+    end
+
+    if type(GetMeleeHaste) == "function" then
+        value = SFA_SafeNumber(SFA_SafeCall(GetMeleeHaste))
+        if value then return value, "GetMeleeHaste" end
+    end
+
+    return nil, nil
+end
+
+local function SFA_GetSavedGCD()
+    if SFA_lastGCD then return SFA_lastGCD, SFA_lastHaste, SFA_lastSource end
+    if SFA and SFA.db and SFA.db.other and type(SFA.db.other.gcdLast) == "table" then
+        local last = SFA.db.other.gcdLast
+        local gcd = SFA_SafeNumber(last.gcd)
+        local haste = SFA_SafeNumber(last.haste)
+        if gcd and gcd >= SFA_MIN_GCD and gcd <= SFA_BASE_GCD + 0.10 then
+            return gcd, haste, last.source or "saved"
+        end
+    end
+    return nil, nil, nil
+end
+
+local function SFA_SaveGCD(gcd, haste, source)
+    gcd = SFA_SafeNumber(gcd)
+    haste = SFA_SafeNumber(haste)
+    if not gcd then return end
+    SFA_lastGCD = gcd
+    SFA_lastHaste = haste
+    SFA_lastSource = source or "unknown"
+    if SFA and SFA.db and SFA.db.other then
+        SFA.db.other.gcdLast = {
+            gcd = gcd,
+            haste = haste,
+            source = source or "unknown",
+        }
+    end
+end
+
+local function SFA_GetBestGCD(allowSaved)
+    local pending = SFA_IsGCDPending()
+
+    local gcd = SFA_ReadEngineGCD()
+    if gcd then
+        SFA_SaveGCD(gcd, nil, "engine")
+        return gcd, nil, "engine"
+    end
+
+    local haste, hasteSource = SFA_ReadSafeHaste()
+    gcd = SFA_GCDFromHaste(haste)
+    if gcd then
+        SFA_SaveGCD(gcd, haste, hasteSource or "haste")
+        return gcd, haste, hasteSource or "haste"
+    end
+
+    if allowSaved and not pending then
+        local savedGCD, savedHaste, savedSource = SFA_GetSavedGCD()
+        if savedGCD then
+            return savedGCD, savedHaste, savedSource or "saved"
+        end
+    end
+
+    return SFA_BASE_GCD, nil, pending and "refreshing" or "base"
+end
+
+function SFA_UpdateCharacterGCD()
+    if not CharacterFrame then return end
+
+    -- Do not show or calculate in combat / Arena / BG. This avoids secret value taint completely.
+    if SFA_IsRestrictedForGCDDisplay() then
+        SFA_HideGCDText()
+        return
+    end
+
+    local okVisible, visible = pcall(function() return CharacterFrame:IsShown() end)
+    if okVisible and not visible then return end
 
     local enabled = true
     if SFA and SFA.db and SFA.db.other and SFA.db.other.showCharacterGCD ~= nil then
         enabled = SFA.db.other.showCharacterGCD
     end
 
-    if not enabled then
-        if SFA_GCDText then
-            SFA_GCDText:SetText("")
-            SFA_GCDText:Hide()
-        end
-        return
-    end
-
-    -- In PvP/arena some character stats can be returned as protected/secret values.
-    -- Never do arithmetic on them directly; if blocked, just skip this optional display.
-    local ok, gcd, one = pcall(function()
-        local hasteValue = UnitSpellHaste("player")
-        if type(hasteValue) ~= "number" then return nil, nil end
-
-        local haste = hasteValue / 100
-        local baseGCD = math.max(0.75, 1.5 / (1 + haste))
-        return baseGCD, baseGCD * 1.25
-    end)
-
-    if not ok or not gcd or not one then
-        if SFA_GCDText then
-            SFA_GCDText:SetText("")
-            SFA_GCDText:Hide()
-        end
-        return
-    end
-
     if not SFA_GCDText then
         SFA_GCDText = CharacterFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        SFA_GCDText:SetPoint("TOPLEFT", CharacterStatsPane, "BOTTOMLEFT", 0, -20)
-        SFA_GCDText:SetJustifyH("LEFT")
+        SFA_GCDText:SetJustifyH("CENTER")
     end
 
-    SFA_GCDText:SetText(string.format("Estimated GCD: %.2f\nOne-Button GCD: %.2f", gcd, one))
+    SFA_GCDText:ClearAllPoints()
+    if CharacterStatsPane then
+        SFA_GCDText:SetPoint("TOP", CharacterStatsPane, "BOTTOM", 0, -20)
+    else
+        SFA_GCDText:SetPoint("BOTTOM", CharacterFrame, "BOTTOM", 0, 38)
+    end
+
+    if not enabled then
+        SFA_HideGCDText()
+        return
+    end
+
+    local gcd = SFA_GetBestGCD(true)
+    local oneButton = gcd * 1.25
+
+    -- Haste is intentionally not displayed here; Character Panel already has it.
+    SFA_GCDText:SetText(string.format("Calculated GCD: %.2f\nOne-Button GCD: %.2f", gcd, oneButton))
     SFA_GCDText:Show()
+end
+
+local function SFA_ScheduleCharacterGCDUpdates(forceRefresh)
+    if SFA_IsRestrictedForGCDDisplay() then
+        SFA_HideGCDText()
+        return
+    end
+
+    if forceRefresh then
+        SFA_ClearGCDCache("refreshing")
+        SFA_gcdPendingUntil = SFA_Now() + 2.0
+    end
+
+    if C_Timer then
+        C_Timer.After(0.05, SFA_UpdateCharacterGCD)
+        C_Timer.After(0.15, SFA_UpdateCharacterGCD)
+        C_Timer.After(0.30, SFA_UpdateCharacterGCD)
+        C_Timer.After(0.60, SFA_UpdateCharacterGCD)
+        C_Timer.After(1.00, SFA_UpdateCharacterGCD)
+        C_Timer.After(1.50, SFA_UpdateCharacterGCD)
+        C_Timer.After(2.00, SFA_UpdateCharacterGCD)
+    else
+        SFA_UpdateCharacterGCD()
+    end
 end
 
 local f = CreateFrame("Frame")
 f:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
 f:RegisterEvent("UNIT_INVENTORY_CHANGED")
 f:RegisterEvent("PLAYER_ENTERING_WORLD")
-f:SetScript("OnEvent", function()
-    C_Timer.After(0.1, SFA_UpdateCharacterGCD)
+f:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+f:RegisterEvent("PLAYER_REGEN_ENABLED")
+f:RegisterEvent("PLAYER_REGEN_DISABLED")
+f:RegisterEvent("COMBAT_RATING_UPDATE")
+f:RegisterEvent("UNIT_STATS")
+f:RegisterEvent("UNIT_SPELL_HASTE")
+f:RegisterEvent("SPELL_UPDATE_COOLDOWN")
+f:RegisterEvent("ACTIONBAR_UPDATE_COOLDOWN")
+f:RegisterEvent("UPDATE_SHAPESHIFT_FORM")
+f:RegisterEvent("UPDATE_SHAPESHIFT_FORMS")
+f:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+f:SetScript("OnEvent", function(_, event, unit)
+    if (event == "UNIT_STATS" or event == "UNIT_SPELL_HASTE") and unit and unit ~= "player" then return end
+
+    if event == "PLAYER_REGEN_DISABLED" or SFA_IsRestrictedForGCDDisplay() then
+        SFA_HideGCDText()
+        return
+    end
+
+    local forceRefresh = (event == "UPDATE_SHAPESHIFT_FORM" or event == "UPDATE_SHAPESHIFT_FORMS" or event == "PLAYER_EQUIPMENT_CHANGED" or event == "UNIT_INVENTORY_CHANGED")
+    SFA_ScheduleCharacterGCDUpdates(forceRefresh)
 end)
 
-hooksecurefunc("PaperDollFrame_UpdateStats", SFA_UpdateCharacterGCD)
+local function SFA_HookCharacterFrameShow()
+    if CharacterFrame and not CharacterFrame.SFA_GCDHooked then
+        CharacterFrame.SFA_GCDHooked = true
+        CharacterFrame:HookScript("OnShow", function() SFA_ScheduleCharacterGCDUpdates(false) end)
+    end
+end
+SFA_HookCharacterFrameShow()
