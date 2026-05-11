@@ -525,11 +525,18 @@ end
 
 function SFA:EnsureQuestIcon(frame)
   if not frame then return nil end
-  if frame.SFAQuestIcon then
-    return frame.SFAQuestIcon
+
+  -- Story Mode / raid nameplates may be forbidden/protected.
+  -- Never create regions directly on a ForbiddenNamePlate; attach to UnitFrame when safe.
+  local parent = frame.UnitFrame or frame
+  if not parent or not parent.CreateFontString then return nil end
+  if parent.IsForbidden and parent:IsForbidden() then return nil end
+
+  if parent.SFAQuestIcon then
+    return parent.SFAQuestIcon
   end
 
-  local icon = frame:CreateFontString(nil, "OVERLAY")
+  local icon = parent:CreateFontString(nil, "OVERLAY")
   icon:SetFont("Fonts\\FRIZQT__.TTF", 18, "THICKOUTLINE")
   icon:SetText("!")
   icon:SetTextColor(1, 0.82, 0, 1)
@@ -537,14 +544,14 @@ function SFA:EnsureQuestIcon(frame)
   icon:SetShadowColor(0, 0, 0, 1)
 
   local anchor = self:GetNameplateAnchor(frame)
-  if anchor then
+  if anchor and not (anchor.IsForbidden and anchor:IsForbidden()) then
     icon:SetPoint("RIGHT", anchor, "LEFT", -18, 0)
   else
-    icon:SetPoint("CENTER", frame, "TOP", 0, -10)
+    icon:SetPoint("CENTER", parent, "TOP", 0, -10)
   end
 
   icon:Hide()
-  frame.SFAQuestIcon = icon
+  parent.SFAQuestIcon = icon
   return icon
 end
 
@@ -559,7 +566,7 @@ function SFA:UpdateNameplateQuestIndicator(unit)
   local enabled = self.db and self.db.other and self.db.other.showQuestIndicator
   if enabled and self:IsQuestUnit(unit) then
     local anchor = self:GetNameplateAnchor(frame)
-    if anchor then
+    if anchor and not (anchor.IsForbidden and anchor:IsForbidden()) then
       icon:ClearAllPoints()
       icon:SetPoint("RIGHT", anchor, "LEFT", -18, 0)
     end
@@ -2797,7 +2804,7 @@ end
 
 
 -- === SFA GCD Stats (Character Frame) ===
--- v0.21.31: based on v0.21.27; no Haste display and no Character GCD text in combat / Arena / BG.
+-- v0.21.32: fixed quest indicator creation on protected Story Mode Raid nameplates.
 -- This avoids PvP-instance secret values entirely. The Character panel already shows Haste.
 local SFA_GCDText = SFA_GCDText
 local SFA_GCD_SPELL_ID = 61304
