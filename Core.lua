@@ -465,6 +465,242 @@ function SFA:PreviewFullResourceVoice()
   self:PlayResourceVoiceFile(true)
 end
 
+function SFA:GetProcReadyConfig()
+  if not (self.db and self.db.other) then return nil end
+  self.db.other.procReadyAlerts = self.db.other.procReadyAlerts or { enabled = false, spells = {} }
+  self.db.other.procReadyAlerts.spells = self.db.other.procReadyAlerts.spells or {}
+  self.db.other.procReadyAlerts.cooldowns = self.db.other.procReadyAlerts.cooldowns or {}
+  return self.db.other.procReadyAlerts
+end
+
+function SFA:AddProcReadySpell(spellID)
+  local ok, id = pcall(function() return tonumber(spellID) end)
+  if not ok or not id then return end
+  local cfg = self:GetProcReadyConfig()
+  if not cfg then return end
+  cfg.spells[id] = true
+  self:GetProcReadyKnownCooldown(id)
+  self.procReadyState = self.procReadyState or {}
+  self.procReadyState[id] = { announced = false, lastAlert = 0 }
+  local spellName = self:GetSpellNameSafe(id)
+  Print(spellName and ("Added proc ready alert: " .. id .. " (" .. spellName .. ")") or ("Added proc ready alert: " .. id))
+  if self.RefreshProcReadyUI then self:RefreshProcReadyUI() end
+end
+
+function SFA:RemoveProcReadySpell(spellID)
+  local ok, id = pcall(function() return tonumber(spellID) end)
+  if not ok or not id then return end
+  local cfg = self:GetProcReadyConfig()
+  if cfg and cfg.spells then cfg.spells[id] = nil end
+  if self.procReadyState then self.procReadyState[id] = nil end
+  local spellName = self:GetSpellNameSafe(id)
+  Print(spellName and ("Removed proc ready alert: " .. id .. " (" .. spellName .. ")") or ("Removed proc ready alert: " .. id))
+  if self.RefreshProcReadyUI then self:RefreshProcReadyUI() end
+end
+
+
+function SFA:GetProcReadyKnownCooldown(spellID)
+  local id = tonumber(spellID)
+  if not id then return nil end
+
+  local cfg = self:GetProcReadyConfig()
+  local cached = cfg and cfg.cooldowns and tonumber(cfg.cooldowns[id])
+  if cached and cached > 0 then return cached end
+
+  -- Cache the base cooldown only outside combat. This is informational/fallback only;
+  -- the live ready check below does not compare cooldown numbers in combat.
+  if not (InCombatLockdown and InCombatLockdown()) and GetSpellBaseCooldown then
+    local ok, baseMS = pcall(GetSpellBaseCooldown, id)
+    if ok and type(baseMS) == "number" and baseMS and baseMS > 0 then
+      cfg.cooldowns = cfg.cooldowns or {}
+      cfg.cooldowns[id] = baseMS / 1000
+      return cfg.cooldowns[id]
+    end
+  end
+
+  return nil
+end
+
+function SFA:NoteProcReadySpellCast(spellID)
+  local id = tonumber(spellID)
+  if not id then return end
+  local cfg = self:GetProcReadyConfig()
+  if not (cfg and cfg.spells and cfg.spells[id]) then return end
+
+  self.procReadyState = self.procReadyState or {}
+  local state = self.procReadyState[id] or { announced = false, lastAlert = 0 }
+  self.procReadyState[id] = state
+
+  state.announced = false
+  state.lastCast = GetTime and GetTime() or 0
+  state.wasReady = false
+  state.wasOnCooldown = true
+end
+
+function SFA:IsProcReadySpellOnCooldown(spellID)
+  local id = tonumber(spellID)
+  if not id then return true end
+
+  -- IMPORTANT: do not read/compare startTime or duration here.
+  -- In protected combat paths those cooldown numbers can be "secret" and taint.
+  -- Boolean flags are enough for the generic proc-ready state machine.
+  if C_Spell and C_Spell.GetSpellCooldown then
+    local ok, cd = pcall(C_Spell.GetSpellCooldown, id)
+    if ok and type(cd) == "table" then
+      local active = (cd.isActive == true)
+      local gcdOnly = (cd.isOnGCD == true)
+
+      -- Real cooldown active: not ready.
+      -- GCD-only active: do not treat it as the spell's own cooldown.
+      if active and not gcdOnly then
+        return true
+      end
+
+      return false
+    end
+  end
+
+  -- If cooldown status cannot be read safely, be conservative and avoid a false alert.
+  return true
+end
+
+function SFA:IsProcReadySpellUsable(spellID)
+  local id = tonumber(spellID)
+  if not id then return false end
+
+  local usableClassic = nil
+  if IsUsableSpell then
+    local ok, canUse = pcall(IsUsableSpell, id)
+    if ok then usableClassic = (canUse == true) end
+  end
+
+  -- Classic usability is stricter and matches action button usability well.
+  -- If it says false, do not let another API force a ready alert.
+  if usableClassic ~= nil then
+    return usableClassic == true
+  end
+
+  if C_Spell and C_Spell.IsSpellUsable then
+    local ok, canUse = pcall(C_Spell.IsSpellUsable, id)
+    if ok then return canUse == true end
+  end
+
+  return false
+end
+
+function SFA:IsProcReadySpellReady(spellID)
+  local id = tonumber(spellID)
+  if not id then return false end
+
+  self.procReadyState = self.procReadyState or {}
+  local state = self.procReadyState[id] or { announced = false, lastAlert = 0 }
+  self.procReadyState[id] = state
+
+  local usable = self:IsProcReadySpellUsable(id)
+  local onCooldown = self:IsProcReadySpellOnCooldown(id)
+
+  state.wasReady = (usable == true and onCooldown ~= true)
+  state.wasUsable = usable == true
+  state.wasOnCooldown = onCooldown == true
+
+  return state.wasReady == true
+end
+
+function SFA:PlayProcReadyVoice()
+  local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
+  local sliderVolume = tonumber(cfg and cfg.volume) or 5
+  sliderVolume = math.floor(sliderVolume + 0.5)
+  if sliderVolume <= 0 then return end
+  if sliderVolume > 10 then sliderVolume = 10 end
+
+  local style = self:GetResourceVoiceStyle()
+  self.procReadyVoiceVariantIndex = (self.procReadyVoiceVariantIndex == 1) and 2 or 1
+  local file = "proc_ready_" .. tostring(self.procReadyVoiceVariantIndex) .. ".ogg"
+  local path = [[Interface\AddOns\Simple_Frame_Assistant\media\]] .. style .. [[\]] .. file
+  local layers = self:GetResourceVoiceLayerCount(sliderVolume)
+  if layers <= 0 then return end
+
+  PlaySoundFile(path, "Master")
+  if layers >= 2 and C_Timer and C_Timer.After then
+    C_Timer.After(0.035, function() PlaySoundFile(path, "Master") end)
+  elseif layers >= 2 then
+    PlaySoundFile(path, "Master")
+  end
+  if layers >= 3 and C_Timer and C_Timer.After then
+    C_Timer.After(0.07, function() PlaySoundFile(path, "Master") end)
+  elseif layers >= 3 then
+    PlaySoundFile(path, "Master")
+  end
+end
+
+function SFA:ResetProcReadyStates()
+  self.procReadyState = self.procReadyState or {}
+  for _, state in pairs(self.procReadyState) do
+    if type(state) == "table" then state.announced = false end
+  end
+end
+
+function SFA:StopProcReadyTicker()
+  if self.procReadyTicker and self.procReadyTicker.Cancel then
+    self.procReadyTicker:Cancel()
+  end
+  self.procReadyTicker = nil
+end
+
+function SFA:StartProcReadyTicker()
+  local cfg = self:GetProcReadyConfig()
+  if not (cfg and cfg.enabled and InCombatLockdown and InCombatLockdown()) then
+    self:StopProcReadyTicker()
+    return
+  end
+  if self.procReadyTicker then return end
+  if C_Timer and C_Timer.NewTicker then
+    self.procReadyTicker = C_Timer.NewTicker(0.20, function()
+      if not (SFA and SFA.UpdateProcReadyAlerts) then return end
+      if not InCombatLockdown() then
+        SFA:StopProcReadyTicker()
+        SFA:ResetProcReadyStates()
+        return
+      end
+      SFA:UpdateProcReadyAlerts()
+    end)
+  end
+end
+
+function SFA:UpdateProcReadyAlerts()
+  local cfg = self:GetProcReadyConfig()
+  if not (cfg and cfg.enabled) then return end
+
+  if not InCombatLockdown() then
+    self:ResetProcReadyStates()
+    return
+  end
+
+  self.procReadyState = self.procReadyState or {}
+  local now = GetTime and GetTime() or 0
+  local voiceCfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
+  local cooldown = tonumber(voiceCfg and voiceCfg.cooldown) or 1.0
+  if cooldown < 0 then cooldown = 0 end
+
+  for spellID, enabled in pairs(cfg.spells or {}) do
+    local id = tonumber(spellID)
+    if enabled and id then
+      local state = self.procReadyState[id] or { announced = false, lastAlert = 0 }
+      self.procReadyState[id] = state
+      local ready = self:IsProcReadySpellReady(id)
+      if ready then
+        if not state.announced and (now - (state.lastAlert or 0)) >= cooldown then
+          state.announced = true
+          state.lastAlert = now
+          self:PlayProcReadyVoice()
+        end
+      else
+        state.announced = false
+      end
+    end
+  end
+end
+
 function SFA:CheckFullResourceVoiceOnReachFull()
   local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
   if not (cfg and cfg.enabled) then return end
@@ -2624,11 +2860,26 @@ function SFA:OnEvent(event, ...)
   end
 
   if event == "PLAYER_REGEN_ENABLED" then
+    self:StopProcReadyTicker()
+    self:ResetProcReadyStates()
     self:FlushPendingStructuralUpdates()
     self:ApplyBlizzardRaidFramesVisibility()
     self:UpdateMinimapButtonPosition()
     self:RefreshEnemyNameplateOverlays()
     return
+  end
+
+  if event == "PLAYER_REGEN_DISABLED" or event == "SPELL_UPDATE_COOLDOWN" or event == "ACTIONBAR_UPDATE_COOLDOWN" or event == "ACTIONBAR_UPDATE_USABLE" or event == "UNIT_SPELLCAST_SUCCEEDED" then
+    if event == "PLAYER_REGEN_DISABLED" then self:StartProcReadyTicker() end
+    if event == "UNIT_SPELLCAST_SUCCEEDED" then
+      local unit, _, spellID = ...
+      if unit == "player" then self:NoteProcReadySpellCast(spellID) end
+    end
+    self:UpdateProcReadyAlerts()
+    if C_Timer and C_Timer.After then
+      C_Timer.After(0.10, function() if SFA and SFA.UpdateProcReadyAlerts then SFA:UpdateProcReadyAlerts() end end)
+      C_Timer.After(0.35, function() if SFA and SFA.UpdateProcReadyAlerts then SFA:UpdateProcReadyAlerts() end end)
+    end
   end
 
   if event == "NAME_PLATE_UNIT_ADDED" then
@@ -2720,12 +2971,16 @@ function SFA:RegisterEvents()
   self.eventFrame:RegisterEvent("UNIT_POWER_UPDATE")
   self.eventFrame:RegisterEvent("UNIT_POWER_FREQUENT")
   self.eventFrame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
+  self.eventFrame:RegisterEvent("SPELL_UPDATE_COOLDOWN")
+  self.eventFrame:RegisterEvent("ACTIONBAR_UPDATE_COOLDOWN")
+  self.eventFrame:RegisterEvent("ACTIONBAR_UPDATE_USABLE")
   self.eventFrame:RegisterEvent("UNIT_HEALTH")
   self.eventFrame:RegisterEvent("UNIT_MAXHEALTH")
   self.eventFrame:RegisterEvent("UNIT_AURA")
   self.eventFrame:RegisterEvent("UNIT_NAME_UPDATE")
   self.eventFrame:RegisterEvent("UNIT_FLAGS")
   self.eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+  self.eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
   self.eventFrame:RegisterEvent("PLAYER_ROLES_ASSIGNED")
   self.eventFrame:RegisterEvent("PARTY_MEMBER_ENABLE")
   self.eventFrame:RegisterEvent("PARTY_MEMBER_DISABLE")

@@ -26,6 +26,10 @@ SFA.defaults = {
       volume = 5,
       voiceStyle = "male",
     },
+    procReadyAlerts = {
+      enabled = false,
+      spells = {},
+    },
   },
   simulation = {
     enabled = false,

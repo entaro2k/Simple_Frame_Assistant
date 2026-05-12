@@ -954,6 +954,38 @@ function SFA:RefreshBlacklistUI()
   end
 end
 
+function SFA:RefreshProcReadyUI()
+  if not self.options or not self.options.procReadyRows then return end
+  local cfg = self.db and self.db.other and self.db.other.procReadyAlerts
+  local ids = {}
+  for spellID, enabled in pairs((cfg and cfg.spells) or {}) do
+    if enabled then ids[#ids + 1] = tonumber(spellID) end
+  end
+  table.sort(ids)
+
+  for i, row in ipairs(self.options.procReadyRows) do
+    local spellID = ids[i]
+    if spellID then
+      local spellName = GetSpellNameSafe(spellID)
+      if spellName and spellName ~= "" then
+        row.label:SetText(string.format("%s (%d)", spellName, spellID))
+      else
+        row.label:SetText(tostring(spellID))
+      end
+      row.remove.spellID = spellID
+      row:Show()
+    else
+      row.label:SetText("")
+      row.remove.spellID = nil
+      row:Hide()
+    end
+  end
+
+  if self.options.procReadyEmpty then
+    self.options.procReadyEmpty:SetShown(#ids == 0)
+  end
+end
+
 function SFA:CreateOptionsPanel()
   local root = CreateCanvasFrame(addonName .. "OptionsRoot")
   root.name = "Simple Frame Assistant"
@@ -1139,6 +1171,89 @@ function SFA:CreateOptionsPanel()
     end
   end)
 
+
+  self.db.other.procReadyAlerts = self.db.other.procReadyAlerts or { enabled = false, spells = {} }
+  self.db.other.procReadyAlerts.spells = self.db.other.procReadyAlerts.spells or {}
+
+  local procReadyHeader = CreateSectionHeader(otherContent, "Proc Ready Alerts", 18, -500)
+  local procReadyHelp = otherContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  procReadyHelp:SetPoint("TOPLEFT", 24, -530)
+  procReadyHelp:SetWidth(780)
+  procReadyHelp:SetJustifyH("LEFT")
+  procReadyHelp:SetText("Add spell IDs or spell names to announce PROC READY once when they become usable and off cooldown in combat. Uses the existing voice volume and voice alert cooldown.")
+
+  local procReadyEnabled = CreateCheckbox(otherContent, "Enable proc ready voice alerts", 24, -570, self.db.other.procReadyAlerts.enabled == true, function(val)
+    self.db.other.procReadyAlerts.enabled = val
+    if not val and SFA.ResetProcReadyStates then SFA:ResetProcReadyStates() end
+  end)
+
+  local procReadyInput = CreateFrame("EditBox", nil, otherContent, "InputBoxTemplate")
+  procReadyInput:SetSize(220, 24)
+  procReadyInput:SetPoint("TOPLEFT", 24, -610)
+  procReadyInput:SetAutoFocus(false)
+  procReadyInput:SetNumeric(false)
+
+  local procReadyHint = otherContent:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  procReadyHint:SetPoint("LEFT", procReadyInput, "RIGHT", 10, 0)
+  procReadyHint:SetWidth(260)
+  procReadyHint:SetJustifyH("LEFT")
+  procReadyHint:SetText("Spell ID or name")
+  procReadyInput.spellNameHint = procReadyHint
+
+  local procReadyAutocomplete = CreateSpellAutocomplete(otherContent, procReadyInput)
+
+  local procReadyAdd = CreateButton(otherContent, "Add", 254, -608, 70, 24, function()
+    local spellID, spellName = ResolveSpellInput(procReadyInput:GetText())
+    if spellID then
+      SFA:AddProcReadySpell(spellID)
+      if spellName then AddSpellAutocompleteEntry(spellID, spellName) end
+      procReadyInput:SetText("")
+      procReadyHint:SetText("Spell ID or name")
+      procReadyAutocomplete:Hide()
+      procReadyInput:ClearFocus()
+    else
+      procReadyHint:SetText("No spell found")
+    end
+  end)
+
+  procReadyInput:SetScript("OnTextChanged", function(self)
+    local spellID, spellName = ResolveSpellInput(self:GetText())
+    if spellID then
+      procReadyHint:SetText(spellName and string.format("%s (%d)", spellName, spellID) or tostring(spellID))
+    else
+      procReadyHint:SetText("Spell ID or name")
+    end
+    procReadyAutocomplete:Refresh(self:GetText())
+  end)
+  procReadyInput:SetScript("OnEscapePressed", function(self)
+    procReadyAutocomplete:Hide()
+    self:ClearFocus()
+  end)
+  procReadyInput:SetScript("OnEnterPressed", function(self)
+    procReadyAdd:Click()
+  end)
+
+  local procReadyEmpty = otherContent:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  procReadyEmpty:SetPoint("TOPLEFT", 24, -646)
+  procReadyEmpty:SetText("No proc ready spell IDs yet.")
+
+  local procReadyRows = {}
+  for i = 1, 10 do
+    local row = CreateFrame("Frame", nil, otherContent)
+    row:SetSize(760, 22)
+    row:SetPoint("TOPLEFT", 24, -646 - ((i - 1) * 22))
+    row.label = CreateLabel(row, "", 0, 0, "GameFontHighlightSmall")
+    row.remove = CreateButton(row, "Remove", 310, 2, 80, 20, function(btn)
+      if btn.spellID then
+        SFA:RemoveProcReadySpell(btn.spellID)
+      end
+    end)
+    row:Hide()
+    procReadyRows[#procReadyRows + 1] = row
+  end
+
+  otherContent:SetHeight(920)
+
 local simulationPanel = CreateCanvasFrame(addonName .. "OptionsSimulation")
 local simulationContent = simulationPanel.content
 local simulationTitle = simulationContent:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
@@ -1322,6 +1437,10 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
     otherQuestIndicator = otherQuestIndicator,
     otherTargetXMark = otherTargetXMark,
     otherCharacterGCD = otherCharacterGCD,
+    procReadyEnabled = procReadyEnabled,
+    procReadyInput = procReadyInput,
+    procReadyRows = procReadyRows,
+    procReadyEmpty = procReadyEmpty,
 	otherBuilderSpenderIndicator = otherBuilderSpenderIndicator,
     simulationEnabled = simulationEnabled,
     simRowWorld = simRowWorld,
@@ -1357,6 +1476,7 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
 
   self:RefreshOptionsPanel()
   self:RefreshBlacklistUI()
+  self:RefreshProcReadyUI()
 end
 
 function SFA:OpenOptions()

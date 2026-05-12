@@ -141,3 +141,20 @@ Sections:
 - Uses real engine GCD cooldown when available, safe haste API calculation otherwise.
 - Removes `n/a` fallback; shows saved/base GCD when PvP prep does not expose live values.
 - Safer for Arena/BG/RBG preparation with fewer taint-prone reads.
+
+## Changelog 0.21.36
+
+- Fixed proc-ready alert taint caused by comparing protected/secret cooldown numeric values in combat.
+- Proc Ready Alerts now use a taint-safe usability check and keep the one-shot alert reset behavior.
+
+## Changelog 0.21.34
+- Added Smart Assist Proc Ready Alerts list.
+- Added spell ID / spell name autocomplete when adding monitored proc spells.
+- Added combat-only PROC READY voice alert when a monitored spell becomes usable and off cooldown.
+- Proc alerts reuse existing Smart Assist voice volume, voice style, and alert cooldown settings.
+
+## Changelog 0.21.38
+- Reworked Proc Ready Alerts back to fully generic spell logic.
+- Removed Chomp-specific hardcoding and energy-window logic.
+- Alerts now require both conditions at the same time: spell usable and no real spell cooldown detected.
+- Cooldown check avoids taint-prone startTime/duration comparisons and uses safe cooldown state flags only.
