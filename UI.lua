@@ -1115,49 +1115,11 @@ function SFA:CreateOptionsPanel()
   otherSub:SetPoint("TOPLEFT", otherTitle, "BOTTOMLEFT", 0, -6)
   otherSub:SetText("Smart Assist options.")
   local otherHeader = CreateSectionHeader(otherContent, "Smart Assist", 18, -68)
-  local otherQuestIndicator = CreateCheckbox(otherContent, "Show quest objective ! on nameplates", 24, -104, self.db.other and self.db.other.showQuestIndicator, function(val)
-    self.db.other.showQuestIndicator = val
-    self:RefreshQuestIndicators()
-  end)
-  local otherBuilderSpenderIndicator = CreateCheckbox(otherContent, "Show full builder-spender resource circle", 24, -140, self.db.other.showBuilderSpenderIndicator ~= false, function(val)
-    self.db.other.showBuilderSpenderIndicator = val
-    self:RefreshEnemyNameplateOverlays()
-  end)
-
-  self.db.other.resourceVoiceAlerts = self.db.other.resourceVoiceAlerts or { enabled = false, cooldown = 1.0, volume = 5 }
-  if self.db.other.resourceVoiceAlerts.cooldown == nil then self.db.other.resourceVoiceAlerts.cooldown = 1.0 end
-  if self.db.other.resourceVoiceAlerts.volume == nil then self.db.other.resourceVoiceAlerts.volume = 5 end
-  if self.db.other.resourceVoiceAlerts.voiceStyle ~= "female" then self.db.other.resourceVoiceAlerts.voiceStyle = "male" end
-
-  local otherResourceVoice = CreateCheckbox(otherContent, "Voice alert when builder-spender resource is full", 24, -176, self.db.other.resourceVoiceAlerts.enabled == true, function(val)
-    self.db.other.resourceVoiceAlerts.enabled = val
-    if val and SFA.PreviewFullResourceVoice then
-      SFA:PreviewFullResourceVoice()
-    end
-  end)
-  local resourceVoiceStyleDropDown = CreateResourceVoiceStyleDropDown(otherContent, 54, -212, self.db.other.resourceVoiceAlerts.voiceStyle or "male", function(val)
-    self.db.other.resourceVoiceAlerts.voiceStyle = (val == "female") and "female" or "male"
-    if SFA.PreviewFullResourceVoice then
-      SFA:PreviewFullResourceVoice()
-    end
-  end)
-
-  local resourceVoiceVolume = CreateSlider(otherContent, "Voice alert volume", 54, -276, 0, 10, 1, self.db.other.resourceVoiceAlerts.volume or 5, function(val)
-    self.db.other.resourceVoiceAlerts.volume = val
-    if SFA.PreviewFullResourceVoice then
-      SFA:PreviewFullResourceVoice()
-    end
-  end)
-
-  local resourceVoiceCooldown = CreateSlider(otherContent, "Voice alert cooldown", 54, -332, 0, 5, 0.5, self.db.other.resourceVoiceAlerts.cooldown or 1.0, function(val)
-    self.db.other.resourceVoiceAlerts.cooldown = val
-  end)
-
-  local otherTargetXMark = CreateCheckbox(otherContent, "Show X mark on enemy target frame", 24, -400, self.db.other and self.db.other.showTargetXMark, function(val)
+  local otherTargetXMark = CreateCheckbox(otherContent, "Show X mark on enemy target frame", 24, -104, self.db.other and self.db.other.showTargetXMark, function(val)
     self.db.other.showTargetXMark = val
     self:RefreshGroup("enemy")
   end)
-  local otherCharacterGCD = CreateCheckbox(otherContent, "Show Estimated / One-Button GCD under Character window", 24, -436, self.db.other.showCharacterGCD ~= false, function(val)
+  local otherCharacterGCD = CreateCheckbox(otherContent, "Show Estimated / One-Button GCD under Character window", 24, -140, self.db.other.showCharacterGCD ~= false, function(val)
     self.db.other.showCharacterGCD = val
     if SFA_UpdateCharacterGCD then
       SFA_UpdateCharacterGCD()
@@ -1169,6 +1131,44 @@ function SFA:CreateOptionsPanel()
         SFA_GCDText:Hide()
       end
     end
+  end)
+
+  local otherQuestIndicator = CreateCheckbox(otherContent, "Show quest objective ! on nameplates", 24, -176, self.db.other and self.db.other.showQuestIndicator, function(val)
+    self.db.other.showQuestIndicator = val
+    self:RefreshQuestIndicators()
+  end)
+  local otherBuilderSpenderIndicator = CreateCheckbox(otherContent, "Show full builder-spender resource circle", 24, -212, self.db.other.showBuilderSpenderIndicator ~= false, function(val)
+    self.db.other.showBuilderSpenderIndicator = val
+    self:RefreshEnemyNameplateOverlays()
+  end)
+
+  self.db.other.resourceVoiceAlerts = self.db.other.resourceVoiceAlerts or { enabled = false, cooldown = 1.0, volume = 5 }
+  if self.db.other.resourceVoiceAlerts.cooldown == nil then self.db.other.resourceVoiceAlerts.cooldown = 1.0 end
+  if self.db.other.resourceVoiceAlerts.volume == nil then self.db.other.resourceVoiceAlerts.volume = 5 end
+  if self.db.other.resourceVoiceAlerts.voiceStyle ~= "female" then self.db.other.resourceVoiceAlerts.voiceStyle = "male" end
+
+  local otherResourceVoice = CreateCheckbox(otherContent, "Voice alert when builder-spender resource is full", 24, -248, self.db.other.resourceVoiceAlerts.enabled == true, function(val)
+    self.db.other.resourceVoiceAlerts.enabled = val
+    if val and SFA.PreviewFullResourceVoice then
+      SFA:PreviewFullResourceVoice()
+    end
+  end)
+  local resourceVoiceStyleDropDown = CreateResourceVoiceStyleDropDown(otherContent, 54, -284, self.db.other.resourceVoiceAlerts.voiceStyle or "male", function(val)
+    self.db.other.resourceVoiceAlerts.voiceStyle = (val == "female") and "female" or "male"
+    if SFA.PreviewFullResourceVoice then
+      SFA:PreviewFullResourceVoice()
+    end
+  end)
+
+  local resourceVoiceVolume = CreateSlider(otherContent, "Voice alert volume", 54, -348, 0, 10, 1, self.db.other.resourceVoiceAlerts.volume or 5, function(val)
+    self.db.other.resourceVoiceAlerts.volume = val
+    if SFA.PreviewFullResourceVoice then
+      SFA:PreviewFullResourceVoice()
+    end
+  end)
+
+  local resourceVoiceCooldown = CreateSlider(otherContent, "Voice alert cooldown", 54, -404, 0, 5, 0.5, self.db.other.resourceVoiceAlerts.cooldown or 1.0, function(val)
+    self.db.other.resourceVoiceAlerts.cooldown = val
   end)
 
 

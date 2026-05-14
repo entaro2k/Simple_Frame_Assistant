@@ -153,7 +153,7 @@ Sections:
 - Added combat-only PROC READY voice alert when a monitored spell becomes usable and off cooldown.
 - Proc alerts reuse existing Smart Assist voice volume, voice style, and alert cooldown settings.
 
-## Changelog 0.21.38
+## Changelog 0.21.39
 - Reworked Proc Ready Alerts back to fully generic spell logic.
 - Removed Chomp-specific hardcoding and energy-window logic.
 - Alerts now require both conditions at the same time: spell usable and no real spell cooldown detected.
