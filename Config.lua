@@ -48,8 +48,11 @@ friendly = {
   point = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 },
   scenarioPoints = {
     smallGroup = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 },
-    raid10 = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 },
-    raid25 = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 },
+    world     = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 },
+    arena     = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 },
+    dungeon   = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 },
+    raid10    = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 },
+    raid25    = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 },
   },
   units = { "player", "party1", "party2", "party3", "party4" },
   autoShrinkLargeGroups = true,

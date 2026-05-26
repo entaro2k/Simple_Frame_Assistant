@@ -880,16 +880,7 @@ function SFA:SetFriendlyScenarioPoint(mode, x, y, anchor, relativePoint)
   return true
 end
 
-function SFA:GetFriendlyContextKeyForSimulationScenario()
-  local scenario = self:GetSimulationScenario()
-  if scenario == "raid10" then
-    return "raid10"
-  elseif scenario == "raid25" then
-    return "raid25"
-  else
-    return "smallGroup"
-  end
-end
+-- NOTE: duplicate definition removed (was overwriting the correct version above with wrong "smallGroup" logic)
 
 
 function SFA:SaveCurrentFriendlyPositionForSimulation()
@@ -1065,8 +1056,9 @@ function SFA:SetLastContextPoint(group, key, point)
   }
 
   if group == "friendly" then
-    local mapped = self:GetFriendlyScenarioKeyForMode(key)
-    cfg.scenarioPoints[mapped] = saved
+    -- key is already a mapped scenarioPoints key (e.g. "arena","raid10","world")
+    -- Do NOT call GetFriendlyScenarioKeyForMode again — it would double-map "arena" -> "world"
+    cfg.scenarioPoints[key] = saved
   else
     cfg.scenarioPoints.default = saved
   end

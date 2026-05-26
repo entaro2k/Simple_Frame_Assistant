@@ -1474,6 +1474,24 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
 	
   }
 
+  -- Expose a targeted refresh just for the simulation position inputs,
+  -- called by the X/Y onCommit callbacks after the user types a value.
+  self.RefreshSimulationPositionInputs = function()
+    if not self.options then return end
+    local db = self.db
+    local function syncXY(xRef, yRef, mode)
+      local p = self:GetFriendlyScenarioPoint(mode)
+      if not p then return end
+      if xRef then xRef:SetText(tostring(p.x or 0)) end
+      if yRef then yRef:SetText(tostring(p.y or 0)) end
+    end
+    syncXY(self.options.simRowWorldX,   self.options.simRowWorldY,   "world")
+    syncXY(self.options.simRowArenaX,   self.options.simRowArenaY,   "arena3v3")
+    syncXY(self.options.simRowDungeonX, self.options.simRowDungeonY, "dungeon")
+    syncXY(self.options.simRowRaid10X,  self.options.simRowRaid10Y,  "raid10")
+    syncXY(self.options.simRowRaid25X,  self.options.simRowRaid25Y,  "raid25")
+  end
+
   self:RefreshOptionsPanel()
   self:RefreshBlacklistUI()
   self:RefreshProcReadyUI()
