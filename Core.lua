@@ -1000,8 +1000,11 @@ function SFA:EnsureScenarioPoints(group)
 
   if group == "friendly" then
     if type(cfg.scenarioPoints.smallGroup) ~= "table" then cfg.scenarioPoints.smallGroup = clonePoint(base) end
-    if type(cfg.scenarioPoints.raid10) ~= "table" then cfg.scenarioPoints.raid10 = clonePoint(base) end
-    if type(cfg.scenarioPoints.raid25) ~= "table" then cfg.scenarioPoints.raid25 = clonePoint(base) end
+    if type(cfg.scenarioPoints.world)      ~= "table" then cfg.scenarioPoints.world      = clonePoint(base) end
+    if type(cfg.scenarioPoints.arena)      ~= "table" then cfg.scenarioPoints.arena      = clonePoint(base) end
+    if type(cfg.scenarioPoints.dungeon)    ~= "table" then cfg.scenarioPoints.dungeon    = clonePoint(base) end
+    if type(cfg.scenarioPoints.raid10)     ~= "table" then cfg.scenarioPoints.raid10     = clonePoint(base) end
+    if type(cfg.scenarioPoints.raid25)     ~= "table" then cfg.scenarioPoints.raid25     = clonePoint(base) end
   else
     if type(cfg.scenarioPoints.default) ~= "table" then cfg.scenarioPoints.default = clonePoint(base) end
   end
@@ -2683,19 +2686,21 @@ function SFA:MigrateFriendlySettings()
       local sp = entry.scenarioPoints or {}
 
       if group == "friendly" then
+        -- Build smallGroup from legacy world/arena/dungeon if needed (one-time migration)
         if type(sp.smallGroup) ~= "table" then
-          sp.smallGroup = clonePoint(sp.smallGroup or sp.world or sp.arena or sp.dungeon or fallback)
+          sp.smallGroup = clonePoint(sp.world or sp.arena or sp.dungeon or fallback)
         end
         if type(sp.raid10) ~= "table" then
-          sp.raid10 = clonePoint(sp.raid10 or fallback)
+          sp.raid10 = clonePoint(fallback)
         end
         if type(sp.raid25) ~= "table" then
-          sp.raid25 = clonePoint(sp.raid25 or fallback)
+          sp.raid25 = clonePoint(fallback)
         end
-
-        sp.world = nil
-        sp.arena = nil
-        sp.dungeon = nil
+        -- Ensure world/arena/dungeon exist as distinct keys used by GetCurrentLayoutContextKey.
+        -- Do NOT delete them — they are required for per-scenario position persistence across relogs.
+        if type(sp.world)   ~= "table" then sp.world   = clonePoint(sp.smallGroup or fallback) end
+        if type(sp.arena)   ~= "table" then sp.arena   = clonePoint(sp.smallGroup or fallback) end
+        if type(sp.dungeon) ~= "table" then sp.dungeon = clonePoint(sp.smallGroup or fallback) end
 
         if entry.autoShrinkLargeGroups == nil then entry.autoShrinkLargeGroups = true end
         if entry.largeGroupScale == nil then entry.largeGroupScale = 0.85 end
@@ -2847,6 +2852,19 @@ function SFA:OnEvent(event, ...)
     self:CreateMinimapButton()
     self:RefreshQuestIndicators()
     self:ApplyBlizzardRaidFramesVisibility()
+    -- Hook the WoW Settings window directly so values refresh whenever the user opens it,
+    -- regardless of which subcategory navigation mechanism WoW uses internally.
+    local function hookSettingsRefresh()
+      local panel = SettingsPanel or InterfaceOptionsFrame
+      if panel and panel.HookScript then
+        panel:HookScript("OnShow", function()
+          C_Timer.After(0, function()
+            if SFA and SFA.RefreshOptionsPanel then SFA:RefreshOptionsPanel() end
+          end)
+        end)
+      end
+    end
+    C_Timer.After(0, hookSettingsRefresh)
     DEFAULT_CHAT_FRAME:AddMessage("|cff7cc6ffSFA Version " .. GetAddonVersion() .. ".|r Type /sfa")
     return
   end

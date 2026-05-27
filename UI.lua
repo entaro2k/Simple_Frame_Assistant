@@ -71,20 +71,40 @@ end
 
 
 local function CreateNumberInput(parent, x, y, width, value, onCommit)
-  local box = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
+  -- Use no template so WoW's InputBoxTemplate:OnShow cannot reset our text
+  local box = CreateFrame("EditBox", nil, parent)
   box:SetSize(width or 50, 22)
   box:SetPoint("TOPLEFT", x, y)
   box:SetAutoFocus(false)
   box:SetNumeric(false)
+  box:SetMaxLetters(10)
+  box:SetFontObject("GameFontHighlightSmall")
+  box:SetTextInsets(4, 4, 0, 0)
+  box:SetTextColor(1, 1, 1, 1)
+
+  -- Manual border/background (visually matches InputBoxTemplate)
+  local bg = box:CreateTexture(nil, "BACKGROUND")
+  bg:SetAllPoints()
+  bg:SetColorTexture(0, 0, 0, 0.6)
+
+  local border = CreateFrame("Frame", nil, box, "BackdropTemplate")
+  border:SetAllPoints()
+  border:SetBackdrop({
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    edgeSize = 10,
+    insets = { left = 2, right = 2, top = 2, bottom = 2 },
+  })
+  border:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)
+
   box:SetText(tostring(value or "0"))
+  box:SetCursorPosition(0)
 
   local function commit()
     local text = box:GetText() or ""
     local num = tonumber(text)
-    if not num then
-      num = 0
-    end
+    if not num then num = 0 end
     box:SetText(tostring(math.floor(num + 0.5)))
+    box:SetCursorPosition(0)
     onCommit(math.floor(num + 0.5))
   end
 
@@ -94,6 +114,9 @@ local function CreateNumberInput(parent, x, y, width, value, onCommit)
   end)
   box:SetScript("OnEditFocusLost", function()
     commit()
+  end)
+  box:SetScript("OnEscapePressed", function(self)
+    self:ClearFocus()
   end)
   return box
 end
@@ -1107,6 +1130,7 @@ function SFA:CreateOptionsPanel()
   rootContent:SetHeight(780)
 
   local otherPanel = CreateCanvasFrame(addonName .. "OptionsOther")
+  otherPanel.OnRefresh = function() C_Timer.After(0, function() if SFA and SFA.RefreshOptionsPanel then SFA:RefreshOptionsPanel() end end) end
   local otherContent = otherPanel.content
   local otherTitle = otherContent:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
   otherTitle:SetPoint("TOPLEFT", 18, -10)
@@ -1255,6 +1279,8 @@ function SFA:CreateOptionsPanel()
   otherContent:SetHeight(920)
 
 local simulationPanel = CreateCanvasFrame(addonName .. "OptionsSimulation")
+-- OnRefresh is called by WoW's SettingsPanel when this subcategory is displayed
+simulationPanel.OnRefresh = function() C_Timer.After(0, function() if SFA and SFA.RefreshOptionsPanel then SFA:RefreshOptionsPanel() end end) end
 local simulationContent = simulationPanel.content
 local simulationTitle = simulationContent:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 simulationTitle:SetPoint("TOPLEFT", 18, -10)
@@ -1313,6 +1339,12 @@ local function simulationScenarioRow(y, mode, label)
       if self.RefreshSimulationPositionInputs then self:RefreshSimulationPositionInputs() end
     end
   end)
+  -- HookScript fires AFTER InputBoxTemplate's own OnShow (which resets the text),
+  -- so our value is always the last thing written.
+  xBox:HookScript("OnShow", function(box)
+    local p = self:GetFriendlyScenarioPoint(mode)
+    if p then box:SetText(tostring(p.x or 0)) end
+  end)
 
   local yBox = CreateNumberInput(simulationContent, 360, y + 4, 56, point and point.y or 0, function(val)
     local p = self:GetFriendlyScenarioPoint(mode)
@@ -1324,6 +1356,10 @@ local function simulationScenarioRow(y, mode, label)
       end
       if self.RefreshSimulationPositionInputs then self:RefreshSimulationPositionInputs() end
     end
+  end)
+  yBox:HookScript("OnShow", function(box)
+    local p = self:GetFriendlyScenarioPoint(mode)
+    if p then box:SetText(tostring(p.y or 0)) end
   end)
 
   return name, box, xBox, yBox
@@ -1343,6 +1379,7 @@ simulationHelp:SetText("Simulation mirrors the real layouts: World, Arena 3v3, D
 simulationContent:SetHeight(500)
 
 local friendlyPanel = CreateCanvasFrame(addonName .. "OptionsFriendly")
+friendlyPanel.OnRefresh = function() C_Timer.After(0, function() if SFA and SFA.RefreshOptionsPanel then SFA:RefreshOptionsPanel() end end) end
   local friendlyContent = friendlyPanel.content
   local friendlyTitle = friendlyContent:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
   friendlyTitle:SetPoint("TOPLEFT", 18, -10)
@@ -1392,6 +1429,7 @@ end
 friendlyContent:SetHeight(1260)
 
   local enemyPanel = CreateCanvasFrame(addonName .. "OptionsEnemy")
+  enemyPanel.OnRefresh = function() C_Timer.After(0, function() if SFA and SFA.RefreshOptionsPanel then SFA:RefreshOptionsPanel() end end) end
   local enemyContent = enemyPanel.content
   local enemyTitle = enemyContent:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
   enemyTitle:SetPoint("TOPLEFT", 18, -10)
