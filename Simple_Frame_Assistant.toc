@@ -1,11 +1,12 @@
-## IconTexture: Interface\AddOns\Simple_Frame_Assistant\Icon
+## IconTexture: Interface\\AddOns\\Simple_Frame_Assistant\\Icon
 ## Interface: 120005
 ## Title: Simple Frame Assistant
 ## Notes: Simple Midnight-only friendly/enemy frame assistant.
-## Author: En Taro & OpenAI
-## Version: 0.21.46
+## Author: En Taro
+## Version: 0.22.00
 ## SavedVariables: SFA_DB
 
 Config.lua
 Core.lua
+MacroOrganizer.lua
 UI.lua

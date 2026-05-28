@@ -786,6 +786,8 @@ if self.options.otherBuilderSpenderIndicator then self.options.otherBuilderSpend
   if self.options.locked then self.options.locked:SetChecked(db.locked) end
   if self.options.hideHeaders then self.options.hideHeaders:SetChecked(db.hideHeaders) end
   if self.options.minimapEnabled then self.options.minimapEnabled:SetChecked(db.minimap and db.minimap.enabled ~= false) end
+  if self.options.redesignMacroWindow then self.options.redesignMacroWindow:SetChecked(db.other and db.other.redesignMacroWindow) end
+  if self.options.macroOrgBtn then self.options.macroOrgBtn:SetEnabled(db.other and db.other.redesignMacroWindow and true or false) end
   if self.options.otherQuestIndicator then self.options.otherQuestIndicator:SetChecked(db.other and db.other.showQuestIndicator) end
   if self.options.otherTargetXMark then self.options.otherTargetXMark:SetChecked(db.other and db.other.showTargetXMark) end
   if self.options.otherCharacterGCD then self.options.otherCharacterGCD:SetChecked(db.other and db.other.showCharacterGCD ~= false) end
@@ -1042,13 +1044,31 @@ function SFA:CreateOptionsPanel()
     if self.UpdateMinimapButtonPosition then self:UpdateMinimapButtonPosition() end
   end)
 
+  -- v0.22.00: Redesign Macro Window
+  local redesignMacroWindow = CreateCheckbox(rootContent, "Redesign Macro Window (tabs: Global | Class | Character)", 24, -200,
+    self.db.other and self.db.other.redesignMacroWindow, function(val)
+    self.db.other = self.db.other or {}
+    self.db.other.redesignMacroWindow = val
+    if self.options and self.options.macroOrgBtn then
+      self.options.macroOrgBtn:SetEnabled(val and true or false)
+    end
+    if SFA and SFA.MacroFrame_UpdateSlashHook then
+      SFA:MacroFrame_UpdateSlashHook()
+    end
+  end)
+
+  local macroOrgBtn = CreateButton(rootContent, "Open /sfamacro", 400, -198, 130, 22, function()
+    if SFA and SFA.CMF_Toggle then SFA:CMF_Toggle() end
+  end)
+  macroOrgBtn:SetEnabled(self.db.other and self.db.other.redesignMacroWindow and true or false)
+
   local generalInfo = rootContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  generalInfo:SetPoint("TOPLEFT", 24, -204)
+  generalInfo:SetPoint("TOPLEFT", 24, -236)
   generalInfo:SetWidth(760)
   generalInfo:SetJustifyH("LEFT")
   generalInfo:SetText("Use /sfa to open this page quickly. Move unlocked Friendly or Enemy blocks with Shift + drag. Positions are remembered separately for World, Arena, Party/Dungeon, Raid 10, and Raid 25. Macro text can use [@unit] and will be expanded automatically.")
 
-  local blacklistTop = -282
+  local blacklistTop = -314
   local blacklistHeader = CreateSectionHeader(rootContent, "Aura Blacklist", 18, blacklistTop)
   local blacklistHelp = rootContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   blacklistHelp:SetPoint("TOPLEFT", 24, blacklistTop - 28)
@@ -1127,7 +1147,7 @@ function SFA:CreateOptionsPanel()
     row:Hide()
     blacklistRows[#blacklistRows + 1] = row
   end
-  rootContent:SetHeight(780)
+  rootContent:SetHeight(812)
 
   local otherPanel = CreateCanvasFrame(addonName .. "OptionsOther")
   otherPanel.OnRefresh = function() C_Timer.After(0, function() if SFA and SFA.RefreshOptionsPanel then SFA:RefreshOptionsPanel() end end) end
@@ -1472,6 +1492,8 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
     locked = locked,
     hideHeaders = hideHeaders,
     minimapEnabled = minimapEnabled,
+    redesignMacroWindow = redesignMacroWindow,
+    macroOrgBtn = macroOrgBtn,
     otherQuestIndicator = otherQuestIndicator,
     otherTargetXMark = otherTargetXMark,
     otherCharacterGCD = otherCharacterGCD,

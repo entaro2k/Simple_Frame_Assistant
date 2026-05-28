@@ -20,6 +20,7 @@ SFA.defaults = {
     showTargetXMark = false,
     showCharacterGCD = true,
 	showBuilderSpenderIndicator = true,
+    redesignMacroWindow = false,
     resourceVoiceAlerts = {
       enabled = false,
       cooldown = 1.0,

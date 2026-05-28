@@ -2852,6 +2852,7 @@ function SFA:OnEvent(event, ...)
     self:CreateMinimapButton()
     self:RefreshQuestIndicators()
     self:ApplyBlizzardRaidFramesVisibility()
+    self:MacroFrame_Init()
     -- Hook the WoW Settings window directly so values refresh whenever the user opens it,
     -- regardless of which subcategory navigation mechanism WoW uses internally.
     local function hookSettingsRefresh()
