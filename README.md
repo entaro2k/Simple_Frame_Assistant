@@ -1,160 +1,133 @@
-# Simple Frame Assistant (SFA)
+# Simple Frame Assistant
 
-Lightweight PvP / PvE helper addon for World of Warcraft  
-Focused on clarity, speed, and minimal UI clutter.
-
----
-
-## ✨ Features
-
-### 🟢 Friendly Frames
-- Solo → shows only player
-- Party / Raid → automatically displays group members
-- Clean vertical / grid layout for large groups
-- Click-cast macros (Left / Right / Middle / extra buttons)
-- Buffs (on bar) & debuffs (below bar)
-- Optional class-colored health bars
-- Healer (+) and Tank (shield) indicators
+**A lightweight, Midnight-exclusive unit frame and utility addon** built for players who want clean, responsive frames without the bloat — plus a fully redesigned macro manager starting in v0.22.
 
 ---
 
-### 🔴 Enemy Frames
-- Arena enemy tracking (auto slots)
-- World → shows current hostile target only
-- Target highlight (border)
-- Click-cast support (Cyclone, Roots, etc.)
-- Class-colored health bars (optional)
+## Overview
+
+Simple Frame Assistant (SFA) provides compact, highly configurable friendly and enemy unit frames designed around arena and group play. It displays the information you actually need — health, debuffs, role icons, HoTs — and stays out of the way the rest of the time. Every element is optional and controlled through a single `/sfa` panel.
 
 ---
 
-### 🧠 Smart Assist
+## Unit Frames
 
-Advanced automation & awareness tools:
+### Friendly Frames
+Display your party and group with clean, role-aware layouts:
+- **Class colors** on health bars
+- **Debuff tracking** — shows debuffs currently on friendly units
+- **Healer & Tank icons** — instant role recognition at a glance
+- **HoT display** — option to show only your own HoTs (`Show my HoTs only`)
+- **Auto-shrink for large groups** — frames scale down automatically when switching from small group to raid, keeping the UI clean
+- **Blizzard raid frame suppression** — optionally hides the default raid frames so they don't overlap
+- **Per-scenario positioning** — frame positions save separately for Arena, Dungeon, Raid 10, Raid 25, and open world
+- **Fully configurable size, spacing, and scale**
 
-#### 🎯 Visual Assist
+### Enemy Frames
+Arena-focused enemy display (defaults to arena1/2/3):
+- **Class colors** and **role icons** (healer marker)
+- **Debuff tracking**
+- **Healer marker** highlights dangerous targets
 
-- ❌ **Target Marker**
-  - Red **X above nameplate** for current target
-  - Optional builder–spender orb when resource is full
-
-- ❗ **Quest Indicator**
-  - Yellow **! above NPCs** related to active quests or scenarios
-  - Smart detection using tooltip data (safe, no taint)
-
----
-
-#### 🔊 Voice Assist
-
-- Triggers when builder–spender resource is full:
-  - COMBO FULL
-  - CHI FULL
-  - HOLY POWER FULL
-  - SOUL SHARDS FULL
-  - ESSENCE FULL
-
-- 🎧 Voice styles:
-  - Male
-  - Female (smooth, natural tone)
-
-- 🎚️ Adjustable voice volume (0–10)
-- ⏱️ Configurable alert cooldown
-
-- 🔄 Trigger conditions:
-  - On reaching full resource
-  - On ability usage while resource is full
+### Click Actions
+Both friendly and enemy frames support fully customizable click macros for every mouse button (Left, Right, Middle, Button4, Button5). Set any macro string per button — e.g., target on left-click, heal on right-click, dispel on middle-click.
 
 ---
 
-### ⚔️ Simulation Mode
-Test the UI without combat.
+## HUD Indicators
 
-Available modes:
-- Arena 3v3
-- Dungeon (5-man)
-- Raid (10 / 25)
-- World
-
-Simulates:
-- roles (healer / tank / dps)
-- buffs & debuffs
-- realistic layouts
-- target states
+| Indicator | Description |
+|-----------|-------------|
+| **Character GCD** | Visual GCD tracker on your character frame |
+| **Builder/Spender indicator** | Shows current resource state for builder/spender rotations |
+| **Quest indicator** | Optional quest objective tracker overlay |
+| **Target X mark** | Visual marker on your current target frame |
 
 ---
 
-### ⚙️ Options Menu
+## Debuff Blacklist
 
-Available in:
-ESC → Options → AddOns → Simple Frame Assistant  
-or via command: `/sfa`
-
-Sections:
-- General
-- Friendly Frame
-- Enemy Frame
-- Smart Assist
-- Simulation
+Filter out unimportant debuffs from your frames. Add any spell by name through the `/sfa` panel — blacklisted spells will no longer appear on friendly or enemy frames, keeping the display clean during busy encounters.
 
 ---
 
-### 🔵 Additional Features
+## Alerts
 
-- Builder–spender resource indicator (combo / holy power / etc.)
-- Enemy target **X marker**
-- Quest objective detection on nameplates
-- Estimated / One-Button GCD display in Character window
+- **Resource Voice Alerts** — audio cues triggered by resource thresholds; configurable volume, cooldown, and voice style (male/female)
+- **Proc Ready Alerts** — define a list of spells; SFA announces when they become available
 
 ---
 
-## 🚀 Design Goals
+## Macro Manager *(v0.22.00)*
 
-- Minimal UI clutter
-- Fast updates (arena-ready)
-- No taint / safe API usage
-- Clear visual + audio feedback
+A fully custom macro window that replaces `/macro` when enabled in `/sfa → General`.
+
+Open it with `/sfamacro` or enable **Redesign Macro Window** in options to redirect `/macro` to it.
+
+### Auto-categorization
+On open, SFA scans every global macro body and classifies it:
+- **Global tab** — macros with no class-specific content (consumables, targeting, utility)
+- **Class tab** (e.g. *Druid*) — macros using class spells detected from your live spellbook + a curated per-class keyword list
+- **Character tab** (e.g. *Entaro*) — WoW's native character-specific macros, shown as-is
+
+Detection re-runs every time the window opens, so edited macros are re-categorized automatically.
+
+### Grid
+- **8 columns × 4 rows = 32 macros per page** with `<` / `>` pagination
+- Live macro count displayed per tab
+- **Drag to action bar** directly from the grid
+
+### Editor
+- Click any macro to load it for editing
+- Icon picker — type an icon name or texture ID
+- Macro name field and multiline command body
+- **Enter** inserts a new line (standard macro editor behavior)
+- Character counter positioned clear of the Save button
+- **Full keyboard capture** — keybindings do not fire while typing
+
+### Autocomplete
+Triggers automatically while typing:
+
+| Context | Activates when | Examples |
+|---------|---------------|---------|
+| Slash commands | typing `/` | `/cast`, `/castsequence`, `/castrandom`, `/target`… |
+| Conditions | inside `[` | `mod:alt`, `mod:ctrl`, `combat`, `stealth`, `mounted`… |
+| Unit targets | typing `@` inside `[` | `@focus`, `@mouseover`, `@party1`, `@arena2`… |
+| Spell names | after `/cast ` + 2 chars | live results from your spellbook |
+
+`↑` `↓` to navigate · `Tab` or `Enter` to confirm · `Esc` to dismiss
 
 ---
 
-## 🧩 Compatibility
+## Options Panel — `/sfa`
 
-- Designed for WoW Midnight
-- Compatible with Interface: 120005+
+- **Lock frames** — prevent accidental dragging
+- **Hide header text** — cleaner look without labels
+- **Minimap button** — toggle the SFA icon on the minimap
+- **Redesign Macro Window** — enables the SFA Macro Manager and redirects `/macro`
+- Friendly and Enemy sub-panels for full frame configuration
+- Buff blacklist manager
+- Click action editor
 
 ---
 
-## 📌 Notes
+## Commands
 
-- Positions are saved per context (Arena / Party / Raid / World)
-- Click-cast macros support `[unit]` expansion automatically
-- Voice alerts use custom `.ogg` files (user-replaceable)
+| Command | Action |
+|---------|--------|
+| `/sfa` | Open the options panel |
+| `/sfamacro` | Open SFA Macro Manager |
+| `/macro` | Opens SFA Macro Manager if Redesign is enabled |
+
+---
+
+## Notes
+
+- **Midnight exclusive** — built and tested for the Midnight private server (Interface 120005). Not supported on other clients.
+- Lightweight by design — no external library dependencies.
+- All settings persist per account via `SFA_DB` SavedVariables.
+
+---
 
 
-
-
-## Changelog v0.21.25
-- Clean GCD calculation from Blizzard numeric haste APIs.
-- Removed Character Panel/PaperDoll text parsing for GCD.
-- Avoids n/a display and UI stat-frame hacks.
-
-## Changelog v0.21.26
-- Reworked Character Panel GCD display to avoid fragile UI/regex/PaperDoll parsing.
-- Uses real engine GCD cooldown when available, safe haste API calculation otherwise.
-- Removes `n/a` fallback; shows saved/base GCD when PvP prep does not expose live values.
-- Safer for Arena/BG/RBG preparation with fewer taint-prone reads.
-
-## Changelog 0.21.36
-
-- Fixed proc-ready alert taint caused by comparing protected/secret cooldown numeric values in combat.
-- Proc Ready Alerts now use a taint-safe usability check and keep the one-shot alert reset behavior.
-
-## Changelog 0.21.34
-- Added Smart Assist Proc Ready Alerts list.
-- Added spell ID / spell name autocomplete when adding monitored proc spells.
-- Added combat-only PROC READY voice alert when a monitored spell becomes usable and off cooldown.
-- Proc alerts reuse existing Smart Assist voice volume, voice style, and alert cooldown settings.
-
-## Changelog 0.21.39
-- Reworked Proc Ready Alerts back to fully generic spell logic.
-- Removed Chomp-specific hardcoding and energy-window logic.
-- Alerts now require both conditions at the same time: spell usable and no real spell cooldown detected.
-- Cooldown check avoids taint-prone startTime/duration comparisons and uses safe cooldown state flags only.
+*Current version: 0.22.01*
