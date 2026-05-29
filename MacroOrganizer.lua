@@ -659,11 +659,17 @@ function SFA:CMF_TriggerAutocomplete()
       end
     end
 
-  -- 3. Spell name: after /cast /use /castsequence (outside brackets)
-  elseif lLine:match("^%s*/cast[%a]*%s") or lLine:match("^%s*/use%s") then
-    -- Extract what comes after command + optional [conditions]
-    local spellPart = line:match("%]%s*(.-)$") or line:match("^%s*/%S+%s+(.-)$") or ""
-    spellPart = spellPart:lower():gsub("^%s+","")
+  -- 3. Spell name: after any /command, including after ; separator
+  elseif lLine:match("/%S+%s") then
+    local spellPart = ""
+    local afterSemi = line:match(";%s*([^;]*)$")
+    if afterSemi then
+      spellPart = afterSemi:match("^%s*(.-)%s*$") or ""
+    else
+      spellPart = line:match("%]%s*(.-)$") or line:match("^%s*/%S+%s+(.-)$") or ""
+      spellPart = spellPart:gsub("^%s+","")
+    end
+    spellPart = spellPart:lower()
     if #spellPart >= 2 then
       mode = "spell"
       local spellSet = self.macroOrgSpellSet or {}
@@ -771,17 +777,17 @@ function SFA:CMF_ApplyAutocomplete()
     newBefore = before:gsub("@[%w]*$", "@" .. sug.insert)
 
   elseif sug.mode == "spell" then
-    -- Replace the trailing spell fragment
-    newBefore = before:gsub("([%]%s])([%w%s'%-]*)$",
-      function(sep) return sep .. sug.insert .. " " end)
-    if newBefore == before then
-      -- fallback: replace after last space/]
-      newBefore = before:gsub("(%s)([%S]*)$",
-        function(sp) return sp .. sug.insert .. " " end)
+    local semiPos = before:find(";[^;]*$")
+    if semiPos then
+      local prefix = before:match("^(.*;%s*)"); if prefix then newBefore=prefix..sug.insert.." " end
     end
-    if newBefore == before then
-      newBefore = before .. sug.insert .. " "
+    if not newBefore or newBefore==before then
+      newBefore=before:gsub("([%]%s])([%w%s'%-]*)$",function(sep) return sep..sug.insert.." " end)
     end
+    if not newBefore or newBefore==before then
+      newBefore=before:gsub("(%s)([%S]*)$",function(sp) return sp..sug.insert.." " end)
+    end
+    if not newBefore or newBefore==before then newBefore=before..sug.insert.." " end
   end
 
   if newBefore and newBefore ~= before then

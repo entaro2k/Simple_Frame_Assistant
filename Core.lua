@@ -1288,7 +1288,8 @@ end
 function SFA:ApplyClickBindings(frame, group)
   if not frame then return end
 
-  local clicks = self.db[group] and self.db[group].clicks
+  -- Use per-character click macros
+  local clicks = self.charDB and self.charDB.clicks and self.charDB.clicks[group]
   if type(clicks) ~= "table" then return end
 
   local unit = frame.unit

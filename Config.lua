@@ -116,12 +116,32 @@ local function MergeDefaults(dst, src)
 end
 
 function SFA:InitializeDB()
+  -- Global settings (layout, minimap, other, non-click friendly/enemy settings)
   if type(SFA_DB) ~= "table" then
     SFA_DB = DeepCopy(self.defaults)
   else
     MergeDefaults(SFA_DB, self.defaults)
   end
   self.db = SFA_DB
+
+  -- Per-character click macros stored separately
+  if type(SFA_DB_Char) ~= "table" then SFA_DB_Char = {} end
+  SFA_DB_Char.clicks = SFA_DB_Char.clicks or {}
+  SFA_DB_Char.clicks.friendly = SFA_DB_Char.clicks.friendly or {}
+  SFA_DB_Char.clicks.enemy    = SFA_DB_Char.clicks.enemy    or {}
+
+  -- Merge defaults for clicks if not yet set per character
+  local defaultButtons = { "LeftButton", "RightButton", "MiddleButton", "Button4", "Button5" }
+  for _, btn in ipairs(defaultButtons) do
+    if SFA_DB_Char.clicks.friendly[btn] == nil then
+      SFA_DB_Char.clicks.friendly[btn] = self.defaults.friendly.clicks[btn] or ""
+    end
+    if SFA_DB_Char.clicks.enemy[btn] == nil then
+      SFA_DB_Char.clicks.enemy[btn] = self.defaults.enemy.clicks[btn] or ""
+    end
+  end
+  self.charDB = SFA_DB_Char
+
   self.session = self.session or {}
   self.session.simulationEnabled = false
   self.session.simulationProfile = nil
@@ -135,12 +155,14 @@ function SFA:GetGroupDB(group)
 end
 
 function SFA:GetClickMacro(group, button)
-  local groupDB = self:GetGroupDB(group)
-  return groupDB and groupDB.clicks and groupDB.clicks[button] or ""
+  -- Always read from per-character storage
+  return self.charDB and self.charDB.clicks and
+         self.charDB.clicks[group] and self.charDB.clicks[group][button] or ""
 end
 
 function SFA:SetClickMacro(group, button, text)
-  local groupDB = self:GetGroupDB(group)
-  if not groupDB then return end
-  groupDB.clicks[button] = text or ""
+  if not self.charDB then return end
+  self.charDB.clicks = self.charDB.clicks or {}
+  self.charDB.clicks[group] = self.charDB.clicks[group] or {}
+  self.charDB.clicks[group][button] = text or ""
 end

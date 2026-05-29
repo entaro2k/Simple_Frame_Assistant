@@ -1,6 +1,159 @@
 local addonName, SFA = ...
 SFA = _G[addonName] or SFA
 
+
+-- ============================================================
+-- SHARED AUTOCOMPLETE DATA
+-- ============================================================
+local UI_AC_SLASH = {
+  "/cast","/castsequence","/castrandom",
+  "/use","/userandom",
+  "/target","/targetexact","/targetlasttarget","/targetlastenemy",
+  "/targetlastfriend","/targetfriend","/targetenemy",
+  "/cleartarget","/focus","/clearfocus","/assist",
+  "/stopcasting","/stopmacro","/cancelaura","/cancelform",
+  "/petattack","/petfollow","/petstay",
+  "/petaggressive","/petdefensive","/petpassive",
+  "/startattack","/stopattack","/dismount","/leavevehicle",
+  "/click","/equip","/equipslot","/swapactionbar","/changeactionbar",
+  "/showtooltip","/show","/script","/run",
+  "/readycheck","/raidwarning",
+  "/say","/yell","/whisper","/party","/guild","/raid","/emote","/me",
+  "/in","/s","/y","/w","/p","/g","/ra",
+}
+local UI_AC_CONDS = {
+  "mod:alt","mod:ctrl","mod:shift",
+  "mod:lalt","mod:ralt","mod:lctrl","mod:rctrl","mod:lshift","mod:rshift",
+  "combat","nocombat","stealth","nostealth","mounted","nomounted",
+  "swimming","flyable","flying","exists","noexists","dead","nodead",
+  "harm","noharm","help","nohelp","indoors","outdoors","party","raid",
+  "vehicle","cursor","btn:1","btn:2","btn:3",
+  "stance:1","stance:2","stance:3","stance:4",
+  "form:0","form:1","form:2","form:3","form:4",
+  "spec:1","spec:2","channeling:","equipped:",
+  "unithasvehicleui","canexitvehicle",
+  "target=target","target=player","target=focus",
+  "target=mouseover","target=cursor","target=pet","target=none",
+}
+local UI_AC_UNITS = {
+  "target","player","focus","mouseover","cursor","none",
+  "pet","pettarget",
+  "arena1","arena2","arena3","arena1target","arena2target","arena3target",
+  "party1","party2","party3","party4",
+  "party1target","party2target","party3target","party4target",
+  "boss1","boss2","boss3","raid1","raid2","raid3",
+  "lasttarget","lastunit",
+}
+local UI_AC_COLORS = {
+  slash="|cff88ddff", cond="|cff88ff99", unit="|cffffcc66", spell="|cffddaaff",
+}
+local UI_AC_TYPE_NAMES = {slash="cmd", cond="[cond]", unit="@unit", spell="spell"}
+
+local function UI_AC_GetSuggestions(editBox)
+  local text   = editBox:GetText() or ""
+  local cursor = editBox:GetCursorPosition() or 0
+  local before = text:sub(1, cursor)
+  local line   = before:match("[^\n]*$") or ""
+  local lLine  = line:lower()
+  local sugs, mode = {}, nil
+
+  local slashToken = lLine:match("^(/%S*)$")
+  if slashToken and #slashToken >= 1 then
+    mode = "slash"
+    for _, cmd in ipairs(UI_AC_SLASH) do
+      if cmd:sub(1,#slashToken)==slashToken then
+        sugs[#sugs+1]={insert=cmd,label=cmd,mode="slash"}
+        if #sugs>=8 then break end
+      end
+    end
+  elseif line:find("%[") and not line:match("%[[^%[]*%]") then
+    local unitPartial = lLine:match("@([%w]*)$")
+    if unitPartial then
+      mode = "unit"
+      for _, u in ipairs(UI_AC_UNITS) do
+        if u:sub(1,#unitPartial)==unitPartial then
+          sugs[#sugs+1]={insert=u,label="@"..u,mode="unit"}
+          if #sugs>=8 then break end
+        end
+      end
+    else
+      local partial = lLine:match("[%[,]%s*([%w:!%-]*)$") or ""
+      mode = "cond"
+      for _, cond in ipairs(UI_AC_CONDS) do
+        if cond:sub(1,#partial)==partial then
+          sugs[#sugs+1]={insert=cond,label=cond,mode="cond"}
+          if #sugs>=8 then break end
+        end
+      end
+    end
+  elseif lLine:match("/%S+%s") then
+    local spellPart = ""
+    local afterSemi = line:match(";%s*([^;]*)$")
+    if afterSemi then
+      spellPart = afterSemi:match("^%s*(.-)%s*$") or ""
+    else
+      spellPart = line:match("%]%s*(.-)$") or line:match("^%s*/%S+%s+(.-)$") or ""
+      spellPart = spellPart:gsub("^%s+","")
+    end
+    spellPart = spellPart:lower()
+    if #spellPart >= 2 then
+      mode = "spell"
+      if not SFA.macroOrgSpellSet then
+        if SFA.MacroOrg_BuildSpellSet then SFA:MacroOrg_BuildSpellSet() end
+      end
+      local spellSet = SFA.macroOrgSpellSet or {}
+      local seen = {}
+      for spell in pairs(spellSet) do
+        if spell:find(spellPart,1,true) and not seen[spell] then
+          seen[spell]=true
+          local proper=spell:gsub("(%a)([%w']*)",function(f,r) return f:upper()..r end)
+          sugs[#sugs+1]={insert=proper,label=proper,mode="spell"}
+          if #sugs>=8 then break end
+        end
+      end
+      table.sort(sugs,function(a,b)
+        local aS=a.label:lower():find(spellPart,1,true)==1
+        local bS=b.label:lower():find(spellPart,1,true)==1
+        if aS~=bS then return aS end
+        return a.label<b.label
+      end)
+    end
+  end
+  return sugs, mode, line, cursor
+end
+
+local function UI_AC_Apply(state)
+  local sugs=state.sugs; local sel=state.selected; local edit=state.editBox
+  if not sugs or sel<1 or sel>#sugs or not edit then return end
+  local sug=sugs[sel]
+  local text=edit:GetText() or ""
+  local cursor=state.cursorSnap or edit:GetCursorPosition()
+  local before=text:sub(1,cursor); local after=text:sub(cursor+1)
+  local newBefore
+  if sug.mode=="slash" then
+    newBefore=before:gsub("(/%S*)$",sug.insert)
+  elseif sug.mode=="cond" then
+    newBefore=before:gsub("([%[,]%s*)([%w:!%-]*)$",function(p) return p..sug.insert end)
+  elseif sug.mode=="unit" then
+    newBefore=before:gsub("@[%w]*$","@"..sug.insert)
+  elseif sug.mode=="spell" then
+    local semiPos=before:find(";[^;]*$")
+    if semiPos then
+      local prefix=before:match("^(.*;%s*)"); if prefix then newBefore=prefix..sug.insert.." " end
+    end
+    if not newBefore or newBefore==before then
+      newBefore=before:gsub("([%]%s])([%w%s\'%-]*)$",function(sep) return sep..sug.insert.." " end)
+    end
+    if not newBefore or newBefore==before then
+      newBefore=before:gsub("(%s)([%S]*)$",function(sp) return sp..sug.insert.." " end)
+    end
+    if not newBefore or newBefore==before then newBefore=before..sug.insert.." " end
+  end
+  if newBefore and newBefore~=before then
+    edit:SetText(newBefore..after); edit:SetCursorPosition(#newBefore)
+  end
+end
+
 local CreateFrame = CreateFrame
 local UIDropDownMenu_CreateInfo = UIDropDownMenu_CreateInfo
 local UIDropDownMenu_SetWidth = UIDropDownMenu_SetWidth
@@ -163,177 +316,246 @@ end
 
 local macroEditBoxCounter = 0
 
+
+-- Shared popup editor window (created once, reused for all macro editboxes)
+local MacroPopup = nil
+
+local function GetMacroPopup()
+  if MacroPopup then return MacroPopup end
+
+  local W, H = 480, 200
+  local pop = CreateFrame("Frame", "SFAMacroPopup", UIParent, "BackdropTemplate")
+  pop:SetSize(W, H)
+  pop:SetFrameStrata("DIALOG")
+  pop:SetMovable(true); pop:EnableMouse(true)
+  pop:RegisterForDrag("LeftButton")
+  pop:SetScript("OnDragStart", function(f) f:StartMoving() end)
+  pop:SetScript("OnDragStop",  function(f) f:StopMovingOrSizing() end)
+  pop:SetClampedToScreen(true)
+  if pop.SetBackdrop then
+    pop:SetBackdrop({
+      bgFile   = "Interface/Tooltips/UI-Tooltip-Background",
+      edgeFile = "Interface/DialogFrame/UI-DialogBox-Border",
+      tile=true, tileSize=32, edgeSize=32,
+      insets={left=8,right=8,top=8,bottom=8},
+    })
+    pop:SetBackdropColor(0.04,0.04,0.07,0.97)
+    pop:SetBackdropBorderColor(0.4,0.4,0.5,1)
+  end
+  pop:Hide()
+
+  -- Title
+  local titleStr = pop:CreateFontString(nil,"OVERLAY","GameFontNormal")
+  titleStr:SetPoint("TOP",0,-10)
+  pop.titleStr = titleStr
+
+  -- Close button
+  local xBtn = CreateFrame("Button",nil,pop,"UIPanelCloseButton")
+  xBtn:SetPoint("TOPRIGHT",-2,-2)
+  xBtn:SetScript("OnClick", function()
+    if pop.onCommit then pop.onCommit(pop.edit:GetText()) end
+    pop:Hide()
+  end)
+
+  -- Hint
+  local hint = pop:CreateFontString(nil,"OVERLAY","GameFontDisableSmall")
+  hint:SetPoint("BOTTOMLEFT",12,12)
+  hint:SetText("|cff888888Enter = newline  |cff88ddffTab|r = autocomplete  |cffff8800Esc|r = close|r")
+
+  -- Body
+  local bodyBG = CreateFrame("Frame",nil,pop,"BackdropTemplate")
+  bodyBG:SetPoint("TOPLEFT",10,-32); bodyBG:SetPoint("BOTTOMRIGHT",-10,32)
+  if bodyBG.SetBackdrop then
+    bodyBG:SetBackdrop({
+      bgFile="Interface/Tooltips/UI-Tooltip-Background",
+      edgeFile="Interface/Tooltips/UI-Tooltip-Border",
+      tile=true,tileSize=8,edgeSize=8,
+      insets={left=2,right=2,top=2,bottom=2},
+    })
+    bodyBG:SetBackdropColor(0.02,0.02,0.04,0.95)
+    bodyBG:SetBackdropBorderColor(0.25,0.25,0.35,0.8)
+  end
+
+  local bodyScroll = CreateFrame("ScrollFrame",nil,bodyBG,"UIPanelScrollFrameTemplate")
+  bodyScroll:SetPoint("TOPLEFT",4,-4); bodyScroll:SetPoint("BOTTOMRIGHT",-26,4)
+
+  local edit = CreateFrame("EditBox",nil,bodyScroll)
+  edit:SetSize(W-60,300)
+  edit:SetMultiLine(true); edit:SetAutoFocus(false)
+  edit:EnableKeyboard(true); edit:SetMaxLetters(255)
+  edit:SetFontObject(ChatFontNormal or GameFontHighlightSmall)
+  edit:SetTextColor(1,1,1,1); edit:SetJustifyH("LEFT"); edit:SetJustifyV("TOP")
+  edit:SetTextInsets(4,4,4,4); edit:SetText("")
+  bodyScroll:SetScrollChild(edit)
+  pop.edit = edit
+
+  -- AC state
+  local ac = {rows={},sugs={},selected=0,cursorSnap=0,editBox=edit,isHovered=false}
+
+  local acFrame = CreateFrame("Frame",nil,pop,"BackdropTemplate")
+  acFrame:SetSize(W-20,20)
+  acFrame:SetPoint("BOTTOMLEFT",bodyBG,"TOPLEFT",0,2)
+  acFrame:SetFrameStrata("FULLSCREEN_DIALOG"); acFrame:SetFrameLevel(200)
+  if acFrame.SetBackdrop then
+    acFrame:SetBackdrop({bgFile="Interface/Tooltips/UI-Tooltip-Background",
+      edgeFile="Interface/Tooltips/UI-Tooltip-Border",
+      tile=true,tileSize=8,edgeSize=6,insets={left=2,right=2,top=2,bottom=2}})
+    acFrame:SetBackdropColor(0.04,0.04,0.10,0.97)
+    acFrame:SetBackdropBorderColor(0.38,0.58,0.90,1)
+  end
+  acFrame:EnableMouse(true)
+  acFrame:SetScript("OnEnter",function() ac.isHovered=true end)
+  acFrame:SetScript("OnLeave",function() ac.isHovered=false end)
+  acFrame:Hide(); ac.frame=acFrame
+
+  local acHeader = acFrame:CreateFontString(nil,"OVERLAY")
+  acHeader:SetFont("Fonts\\FRIZQT__.TTF",9,"")
+  acHeader:SetPoint("TOPLEFT",6,-3); acHeader:SetTextColor(0.5,0.7,1,0.8)
+  acHeader:SetText("Macro Autocomplete")
+
+  for i=1,8 do
+    local row=CreateFrame("Button",nil,acFrame)
+    row:SetHeight(18)
+    row:SetPoint("TOPLEFT",0,-(i-1)*18-16); row:SetPoint("TOPRIGHT",0,-(i-1)*18-16)
+    local hl=row:CreateTexture(nil,"HIGHLIGHT"); hl:SetAllPoints(); hl:SetColorTexture(0.3,0.55,0.95,0.25)
+    local selTex=row:CreateTexture(nil,"BACKGROUND"); selTex:SetAllPoints(); selTex:SetColorTexture(0.18,0.42,0.80,0.30); selTex:Hide()
+    row.selTex=selTex
+    local typeLbl=row:CreateFontString(nil,"OVERLAY"); typeLbl:SetFont("Fonts\\FRIZQT__.TTF",9,"")
+    typeLbl:SetPoint("LEFT",6,0); typeLbl:SetWidth(52); typeLbl:SetJustifyH("LEFT"); row.typeLbl=typeLbl
+    local textLbl=row:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall")
+    textLbl:SetPoint("LEFT",62,0); textLbl:SetPoint("RIGHT",-4,0); textLbl:SetJustifyH("LEFT"); row.textLbl=textLbl
+    row:SetScript("OnEnter",function() ac.isHovered=true end)
+    row:SetScript("OnLeave",function() ac.isHovered=false end)
+    row:SetScript("OnClick",function()
+      ac.selected=i; UI_AC_Apply(ac)
+      edit:SetFocus()
+      acFrame:Hide(); ac.selected=0; ac.sugs={}
+    end)
+    row:Hide(); ac.rows[i]=row
+  end
+
+  local function triggerAC()
+    local sugs,mode=UI_AC_GetSuggestions(edit)
+    if #sugs==0 or not mode then acFrame:Hide(); ac.selected=0; ac.sugs={}; return end
+    ac.sugs=sugs; ac.cursorSnap=edit:GetCursorPosition()
+    for i,row in ipairs(ac.rows) do
+      local sug=sugs[i]
+      if sug then
+        row.typeLbl:SetText((UI_AC_COLORS[sug.mode] or "|cffaaaaaa")..(UI_AC_TYPE_NAMES[sug.mode] or "").."  |r")
+        row.textLbl:SetText(sug.label); row.suggestion=sug; row:Show()
+      else row:Hide() end
+      row.selTex:Hide()
+    end
+    acFrame:SetHeight(16+#sugs*18+2)
+    if ac.selected<1 or ac.selected>#sugs then ac.selected=1 end
+    for i,row in ipairs(ac.rows) do if row.selTex then row.selTex:SetShown(i==ac.selected) end end
+    acFrame:Show(); acFrame:Raise()
+  end
+  local function applyAC() UI_AC_Apply(ac); acFrame:Hide(); ac.selected=0; ac.sugs={} end
+  local function navigateAC(dir)
+    local n=#(ac.sugs or {}); if n==0 then return end
+    ac.selected=ac.selected+dir
+    if ac.selected<1 then ac.selected=n end
+    if ac.selected>n then ac.selected=1 end
+    for i,row in ipairs(ac.rows) do if row.selTex then row.selTex:SetShown(i==ac.selected) end end
+  end
+
+  edit:SetScript("OnTextChanged",function(self,user)
+    if user then triggerAC() end
+    if pop.onChange and user then pop.onChange(self:GetText()) end
+  end)
+  edit:SetScript("OnEnterPressed",function(self)
+    if acFrame:IsShown() and ac.selected>0 then applyAC(); return end
+    self:Insert("\n")
+  end)
+  edit:SetScript("OnKeyDown",function(self,key)
+    self:SetPropagateKeyboardInput(false)
+    if acFrame:IsShown() then
+      if key=="TAB" then applyAC()
+      elseif key=="UP" then navigateAC(-1)
+      elseif key=="DOWN" then navigateAC(1)
+      elseif key=="ESCAPE" then acFrame:Hide(); ac.selected=0; ac.sugs={} end
+    elseif key=="ESCAPE" then
+      if pop.onCommit then pop.onCommit(self:GetText()) end
+      pop:Hide()
+    end
+  end)
+  edit:SetScript("OnKeyUp",function(self) self:SetPropagateKeyboardInput(false) end)
+  edit:SetScript("OnEditFocusLost",function()
+    C_Timer.After(0.15,function() if not ac.isHovered then acFrame:Hide(); ac.selected=0; ac.sugs={} end end)
+  end)
+
+  MacroPopup = pop
+  return pop
+end
+
 local function CreateMacroEditBox(parent, label, x, y, width, text, onCommit, onChange)
   local title = CreateLabel(parent, label, x, y, "GameFontHighlightSmall")
 
+  -- Display frame in options panel (read-only, shows current macro text)
   local bg = CreateFrame("Frame", nil, parent, "BackdropTemplate")
-  bg:SetSize(width, 62)
+  bg:SetSize(width, 44)
   bg:SetPoint("TOPLEFT", x, y - 18)
   if bg.SetBackdrop then
     bg:SetBackdrop({
-      bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+      bgFile   = "Interface/Tooltips/UI-Tooltip-Background",
       edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
-      tile = true,
-      tileSize = 8,
-      edgeSize = 8,
-      insets = { left = 2, right = 2, top = 2, bottom = 2 },
+      tile=true, tileSize=8, edgeSize=8,
+      insets={left=2,right=2,top=2,bottom=2},
     })
-    bg:SetBackdropColor(0.02, 0.02, 0.02, 0.9)
-    bg:SetBackdropBorderColor(0.35, 0.35, 0.35, 0.8)
+    bg:SetBackdropColor(0.02,0.02,0.02,0.9)
+    bg:SetBackdropBorderColor(0.35,0.35,0.35,0.8)
   end
 
-  local scroll = CreateFrame("ScrollFrame", nil, bg, "UIPanelScrollFrameTemplate")
-  scroll:SetPoint("TOPLEFT", 6, -6)
-  scroll:SetPoint("BOTTOMRIGHT", -28, 6)
+  -- Text display inside the bg
+  local display = bg:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall")
+  display:SetPoint("TOPLEFT",6,-6); display:SetPoint("TOPRIGHT",-6,-6)
+  display:SetJustifyH("LEFT"); display:SetJustifyV("TOP")
+  display:SetHeight(32)
+  display:SetText(text or "")
+  display:SetWordWrap(false)
 
-  local edit = CreateFrame("EditBox", nil, scroll)
-  edit:SetMultiLine(true)
-  edit:SetAutoFocus(false)
-  edit:EnableKeyboard(true)
-  edit:EnableMouse(true)
-  if edit.SetFontObject then edit:SetFontObject(ChatFontNormal or GameFontHighlightSmall) end
-  if edit.SetTextColor then edit:SetTextColor(1, 1, 1, 1) end
-  if edit.SetShadowColor then edit:SetShadowColor(0, 0, 0, 0) end
-  if edit.SetJustifyH then edit:SetJustifyH("LEFT") end
-  if edit.SetJustifyV then edit:SetJustifyV("TOP") end
-  if edit.SetTextInsets then edit:SetTextInsets(4, 4, 4, 4) end
-  if edit.SetWidth then edit:SetWidth(width - 46) end
-  edit:SetText(text or "")
-  edit:SetCursorPosition(0)
-  scroll:SetScrollChild(edit)
+  -- Edit button
+  local editBtn = CreateFrame("Button",nil,bg,"UIPanelButtonTemplate")
+  editBtn:SetSize(50,22); editBtn:SetPoint("TOPRIGHT",-4,-4)
+  editBtn:SetText("Edit")
 
-  local editHint = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  editHint:SetPoint("TOPLEFT", bg, "BOTTOMLEFT", 2, -6)
-  editHint:SetWidth(width)
-  editHint:SetHeight(22)
-  editHint:SetHeight(18)
-  editHint:SetJustifyH("LEFT")
-  editHint:SetText('Editing => use /cast [mod:alt,mod:shift,mod:ctrl] if needed.')
-  editHint:SetTextColor(1, 0.82, 0, 1)
-  editHint:Hide()
-
-  local caret = edit:CreateTexture(nil, "OVERLAY")
-  caret:SetColorTexture(1, 1, 1, 1)
-  caret:SetSize(1, 14)
-  caret:Hide()
-
-  local function setFocused(state)
-    if not bg.SetBackdropBorderColor then return end
-    if state then
-      bg:SetBackdropBorderColor(1, 0.82, 0, 1)
-    else
-      bg:SetBackdropBorderColor(0.35, 0.35, 0.35, 0.8)
-    end
-  end
-
-  local function resizeToText()
-    local lines = edit.GetNumLines and edit:GetNumLines() or 3
-    if lines < 3 then lines = 3 end
-    local lineHeight = 14
-    edit:SetHeight(lines * lineHeight + 8)
-    if scroll.UpdateScrollChildRect then scroll:UpdateScrollChildRect() end
-  end
-
-  local function commit()
-    if onCommit then onCommit(edit:GetText()) end
-  end
-
-  local function focusEdit()
-    edit:SetFocus()
-  end
-
-  local blinkElapsed = 0
-  local blinkOn = true
-  local function updateCaretBlink(elapsed)
-    blinkElapsed = blinkElapsed + elapsed
-    if blinkElapsed >= 0.5 then
-      blinkElapsed = 0
-      blinkOn = not blinkOn
-      caret:SetShown(blinkOn)
-    end
-  end
-
+  -- Click anywhere on bg also opens popup
   bg:EnableMouse(true)
-  bg:SetScript("OnMouseDown", focusEdit)
-
-  edit:SetScript("OnMouseDown", function(self)
-    self:SetFocus()
-  end)
-  edit:SetScript("OnMouseUp", function(self)
-    self:SetFocus()
-  end)
-
-  edit:SetScript("OnEditFocusGained", function(self)
-    setFocused(true)
-    editHint:Show()
-    blinkElapsed = 0
-    blinkOn = true
-    caret:Show()
-    bg:SetScript("OnUpdate", function(_, elapsed)
-      updateCaretBlink(elapsed)
-    end)
-  end)
-
-  edit:SetScript("OnTextChanged", function(self, userInput)
-    resizeToText()
-    if onChange and userInput then onChange(self:GetText()) end
-  end)
-
-  edit:SetScript("OnCursorChanged", function(self, xPos, yPos, widthPos, heightPos)
-    if scroll.UpdateScrollChildRect then scroll:UpdateScrollChildRect() end
-    if caret then
-      caret:ClearAllPoints()
-      caret:SetHeight(heightPos and heightPos > 0 and heightPos or 14)
-      caret:SetPoint("TOPLEFT", edit, "TOPLEFT", xPos + 3, -yPos)
-      if self:HasFocus() then caret:Show() end
+  bg:SetScript("OnMouseDown", function()
+    local pop = GetMacroPopup()
+    pop.titleStr:SetText(label)
+    pop.onCommit = function(t)
+      if onCommit then onCommit(t) end
+      display:SetText(t)
     end
-
-    if scroll.GetVerticalScroll and scroll.SetVerticalScroll then
-      local top = scroll:GetVerticalScroll()
-      local bottom = top + scroll:GetHeight()
-      local cursorTop = yPos
-      local cursorBottom = yPos + heightPos
-      if cursorBottom > bottom - 4 then
-        scroll:SetVerticalScroll(cursorBottom - scroll:GetHeight() + 4)
-      elseif cursorTop < top + 4 then
-        scroll:SetVerticalScroll(math.max(0, cursorTop - 4))
-      end
-    end
+    pop.onChange = onChange
+    pop.edit:SetText(text or "")
+    pop.edit:SetCursorPosition(0)
+    -- Reread current text from display (may have been updated)
+    pop.edit:SetText(display:GetText() == "" and (text or "") or display:GetText())
+    pop:SetPoint("CENTER")
+    pop:Show()
+    C_Timer.After(0.05, function() pop.edit:SetFocus() end)
+  end)
+  editBtn:SetScript("OnClick", function()
+    bg:GetScript("OnMouseDown")(bg)
   end)
 
-  edit:SetScript("OnEditFocusLost", function()
-    commit()
-    setFocused(false)
-    editHint:Hide()
-    caret:Hide()
-    bg:SetScript("OnUpdate", nil)
-  end)
+  -- Exposed interface for layout code
+  local fakeEdit = {}
+  fakeEdit.bg = bg
+  fakeEdit.title = title
+  fakeEdit.hint = nil
+  fakeEdit.tip  = nil
+  fakeEdit.GetText = function() return display:GetText() end
+  fakeEdit.SetText = function(_, t)
+    text = t
+    display:SetText(t or "")
+  end
 
-  edit:SetScript("OnEscapePressed", function(self)
-    commit()
-    self:ClearFocus()
-  end)
-
-  edit:SetScript("OnEnterPressed", function(self)
-    if IsShiftKeyDown and IsShiftKeyDown() then
-      self:Insert("\n")
-      resizeToText()
-      return
-    end
-    commit()
-    self:ClearFocus()
-  end)
-
-  resizeToText()
-  edit.bg = bg
-  edit.scrollFrame = scroll
-  edit.title = title
-  edit.hint = editHint
-  edit.tip = nil
-  edit.caret = caret
-  return edit, title, bg, scroll
+  return fakeEdit, title, bg, bg
 end
-
 
 local function StackBelow(widget, anchor, gap)
   if not widget or not anchor then return end
@@ -869,25 +1091,25 @@ function SFA:BuildGroupSection(parent, group, left, top)
     if not InCombatLockdown() then self:ApplyLayout(group) else self.pendingLayout = true end
   end)
 
-  local leftClick = CreateMacroEditBox(parent, "Left click macro", left, y - 82, 360, db.clicks.LeftButton, function(text)
-    db.clicks.LeftButton = text
+  local leftClick = CreateMacroEditBox(parent, "Left click macro", left, y - 82, 360, self:GetClickMacro(group,"LeftButton"), function(text)
+    self:SetClickMacro(group,"LeftButton",text)
     self:RefreshGroup(group)
   end, function(text)
-    db.clicks.LeftButton = text
+    self:SetClickMacro(group,"LeftButton",text)
   end)
 
-  local rightClick = CreateMacroEditBox(parent, "Right click macro", left, y - 82, 360, db.clicks.RightButton, function(text)
-    db.clicks.RightButton = text
+  local rightClick = CreateMacroEditBox(parent, "Right click macro", left, y - 82, 360, self:GetClickMacro(group,"RightButton"), function(text)
+    self:SetClickMacro(group,"RightButton",text)
     self:RefreshGroup(group)
   end, function(text)
-    db.clicks.RightButton = text
+    self:SetClickMacro(group,"RightButton",text)
   end)
 
-  local middleClick = CreateMacroEditBox(parent, "Middle click macro", left, y - 82, 360, db.clicks.MiddleButton, function(text)
-    db.clicks.MiddleButton = text
+  local middleClick = CreateMacroEditBox(parent, "Middle click macro", left, y - 82, 360, self:GetClickMacro(group,"MiddleButton"), function(text)
+    self:SetClickMacro(group,"MiddleButton",text)
     self:RefreshGroup(group)
   end, function(text)
-    db.clicks.MiddleButton = text
+    self:SetClickMacro(group,"MiddleButton",text)
   end)
 
   -- full stack layout for the macro area
