@@ -927,6 +927,12 @@ local function SFA_BuildIconPicker()
   cancelBtn:SetPoint("RIGHT", okBtn, "LEFT", -6, 0)
   cancelBtn:SetScript("OnClick", function() pop:Hide() end)
 
+  -- Refresh button (re-collect icons / flush cache)
+  local refreshBtn = CreateFrame("Button", nil, pop, "UIPanelButtonTemplate")
+  refreshBtn:SetSize(80,22); refreshBtn:SetText("Refresh")
+  refreshBtn:SetPoint("RIGHT", cancelBtn, "LEFT", -6, 0)
+  refreshBtn:SetScript("OnClick", function() SFA:CMF_RefreshIcons() end)
+
   -- Filter on search text change
   searchBox:SetScript("OnTextChanged", function()
     SFA_RefreshIconGrid(searchBox:GetText())
@@ -997,16 +1003,31 @@ local SFA_Collecting = false
 local function SFA_DoCollect(onDone)
   if SFA_Collecting then return end
   SFA_Collecting = true
+  SFA._iconCollecting = true  -- prevent ShowMacroFrame hook from redirecting to our window
+
+  -- Ensure the Blizzard macro UI addon is loaded (it's load-on-demand).
+  -- When opening from Settings, MacroFrame may not exist yet.
+  local loader = C_AddOns and C_AddOns.LoadAddOn or LoadAddOn
+  if loader then pcall(loader, "Blizzard_MacroUI") end
 
   -- Show MacroFrame + click edit button (taint happens here, once per session)
-  if ShowMacroFrame then ShowMacroFrame()
+  -- Use the original (un-hooked) ShowMacroFrame so we get the native frame.
+  local showFn = SFA._origShowMacroFrame or ShowMacroFrame
+  if showFn then showFn()
   elseif MacroFrame then MacroFrame:Show() end
 
-  local editBtn = _G["MacroEditButton"]
-  if editBtn then
-    local onclick = editBtn:GetScript("OnClick")
-    if onclick then pcall(onclick, editBtn, "LeftButton") end
+  -- MacroEditButton's OnClick is what populates MacroPopupFrame with icons.
+  -- It may not exist until the frame above is shown, so look it up after.
+  local function clickEdit()
+    local editBtn = _G["MacroEditButton"]
+    if editBtn then
+      local onclick = editBtn:GetScript("OnClick")
+      if onclick then pcall(onclick, editBtn, "LeftButton") end
+    end
   end
+  clickEdit()
+  -- Retry the edit click shortly after, in case the frame loaded async
+  C_Timer.After(0.1, clickEdit)
 
   -- Poll until MacroPopupFrame has icon textures
   local attempts = 0
@@ -1016,17 +1037,26 @@ local function SFA_DoCollect(onDone)
     if #list > 0 then
       SFA_ICON_CACHE = list
       SFA_Collecting = false
+      SFA._iconCollecting = false
       -- Hide native frames properly via HideUIPanel to deregister from panel manager
       if MacroPopupFrame then MacroPopupFrame:Hide() end
       if HideUIPanel and MacroFrame then HideUIPanel(MacroFrame)
       elseif HideMacroFrame then HideMacroFrame()
       elseif MacroFrame then MacroFrame:Hide() end
       if onDone then onDone() end
-    elseif attempts < 40 then
+    elseif attempts < 60 then
+      -- Keep nudging the native UI to open/populate the icon popup
+      if attempts % 5 == 0 then
+        local sf = SFA._origShowMacroFrame or ShowMacroFrame
+        if sf then sf()
+        elseif MacroFrame then MacroFrame:Show() end
+        clickEdit()
+      end
       C_Timer.After(0.1, poll)
     else
       SFA_ICON_CACHE = {}
       SFA_Collecting = false
+      SFA._iconCollecting = false
       if MacroPopupFrame then MacroPopupFrame:Hide() end
       if HideUIPanel and MacroFrame then HideUIPanel(MacroFrame)
       elseif HideMacroFrame then HideMacroFrame()
@@ -1100,19 +1130,33 @@ function SFA:CMF_OpenIconPopup()
 
   ICON_PICKER.frame:Show()
 
-  if SFA_ICON_CACHE then
-    -- Cache ready (even if empty) — show immediately
-    SFA_RefreshIconGrid("")
-  else
-    -- First time: collect (taint once), then show
-    if not ICON_PICKER.loadingLabel then
-      local lbl = ICON_PICKER.grid:CreateFontString(nil,"OVERLAY","GameFontHighlight")
-      lbl:SetPoint("TOPLEFT",10,-10)
-      ICON_PICKER.loadingLabel = lbl
-    end
-    ICON_PICKER.loadingLabel:SetText("Loading icons...")
-    ICON_PICKER.loadingLabel:Show()
+  -- Always recollect on open (auto cache-flush) so icons reliably appear
+  SFA_ICON_CACHE = nil
 
+  if not ICON_PICKER.loadingLabel then
+    local lbl = ICON_PICKER.grid:CreateFontString(nil,"OVERLAY","GameFontHighlight")
+    lbl:SetPoint("TOPLEFT",10,-10)
+    ICON_PICKER.loadingLabel = lbl
+  end
+  ICON_PICKER.loadingLabel:SetText("Loading icons...")
+  ICON_PICKER.loadingLabel:Show()
+
+  SFA_DoCollect(function()
+    if ICON_PICKER.loadingLabel then ICON_PICKER.loadingLabel:Hide() end
+    if ICON_PICKER.frame:IsShown() then
+      SFA_RefreshIconGrid(ICON_PICKER.searchBox:GetText() or "")
+    end
+  end)
+end
+
+-- Public helper for the in-window Refresh button
+function SFA:CMF_RefreshIcons()
+  SFA_ICON_CACHE = nil
+  if ICON_PICKER and ICON_PICKER.frame and ICON_PICKER.frame:IsShown() then
+    if ICON_PICKER.loadingLabel then
+      ICON_PICKER.loadingLabel:SetText("Loading icons...")
+      ICON_PICKER.loadingLabel:Show()
+    end
     SFA_DoCollect(function()
       if ICON_PICKER.loadingLabel then ICON_PICKER.loadingLabel:Hide() end
       if ICON_PICKER.frame:IsShown() then
@@ -1120,12 +1164,6 @@ function SFA:CMF_OpenIconPopup()
       end
     end)
   end
-end
-
-SLASH_SFAICONS1 = "/sfaicons"
-SlashCmdList["SFAICONS"] = function()
-  SFA_ICON_CACHE = nil
-  print("|cffffff00SFA|r Icon cache cleared. Open the picker to reload.")
 end
 
 function SFA:CMF_RefreshGrid()
@@ -1300,13 +1338,10 @@ end
 -- SLASH HOOKS
 -- ============================================================
 
--- ============================================================
--- SLASH HOOKS
--- ============================================================
-
 function SFA:MacroFrame_Init()
   if not SFA._origMacroSlash then SFA._origMacroSlash = SlashCmdList["MACRO"] end
   self:MacroFrame_UpdateSlashHook()
+  self:MacroFrame_HookGameMenu()
 end
 
 function SFA:MacroFrame_UpdateSlashHook()
@@ -1315,6 +1350,45 @@ function SFA:MacroFrame_UpdateSlashHook()
     SLASH_MACRO1 = "/macro"
   else
     if SFA._origMacroSlash then SlashCmdList["MACRO"] = SFA._origMacroSlash end
+  end
+end
+
+-- Redirect the Game Menu "Macros" button (and any ShowMacroFrame call)
+-- to the custom SFA window when the redesign option is enabled.
+function SFA:MacroFrame_HookGameMenu()
+  if SFA._macroGameMenuHooked then return end
+  SFA._macroGameMenuHooked = true
+
+  -- ToggleMacroFrame is what the Game Menu "Macros" button calls.
+  if type(ToggleMacroFrame) == "function" and not SFA._origToggleMacroFrame then
+    SFA._origToggleMacroFrame = ToggleMacroFrame
+    ToggleMacroFrame = function(...)
+      if SFA.db and SFA.db.other and SFA.db.other.redesignMacroWindow then
+        -- Close the game menu if open, then show our window
+        if GameMenuFrame and GameMenuFrame:IsShown() then HideUIPanel(GameMenuFrame) end
+        SFA:CMF_Toggle()
+        return
+      end
+      return SFA._origToggleMacroFrame(...)
+    end
+  end
+
+  -- Some clients call ShowMacroFrame directly from the menu.
+  if type(ShowMacroFrame) == "function" and not SFA._origShowMacroFrame then
+    SFA._origShowMacroFrame = ShowMacroFrame
+    -- NOTE: we still need the original for icon collection, so only redirect
+    -- when the call did NOT come from our own collector.
+    ShowMacroFrame = function(...)
+      if SFA._iconCollecting then
+        return SFA._origShowMacroFrame(...)
+      end
+      if SFA.db and SFA.db.other and SFA.db.other.redesignMacroWindow then
+        if GameMenuFrame and GameMenuFrame:IsShown() then HideUIPanel(GameMenuFrame) end
+        SFA:CMF_Open()
+        return
+      end
+      return SFA._origShowMacroFrame(...)
+    end
   end
 end
 
