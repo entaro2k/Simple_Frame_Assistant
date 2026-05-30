@@ -192,18 +192,29 @@ local function CreateCheckbox(parent, label, x, y, checked, onClick)
 end
 
 local function CreateSlider(parent, label, x, y, minVal, maxVal, step, value, onChanged)
-  local title = CreateLabel(parent, label .. ": " .. tostring(value), x, y, "GameFontHighlight")
   local slider = CreateFrame("Slider", nil, parent, "OptionsSliderTemplate")
-  slider:SetPoint("TOPLEFT", x, y - 18)
+  slider:SetPoint("TOPLEFT", x, y - 16)
+  local title = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  title:SetPoint("BOTTOMLEFT", slider, "TOPLEFT", 0, 4)
+  title:SetText(label .. ": " .. tostring(value))
   slider:SetMinMaxValues(minVal, maxVal)
   slider:SetValueStep(step)
   slider:SetObeyStepOnDrag(true)
   slider:SetWidth(240)
   slider:SetValue(value)
 
-  local low = CreateLabel(parent, tostring(minVal), x, y - 40, "GameFontHighlightSmall")
+  -- Hide the built-in template Low/High labels (they show wrong values)
+  if slider.Low then slider.Low:SetText("") end
+  if slider.High then slider.High:SetText("") end
+
+  -- Custom Low label (numeric minVal) below the left end of the slider
+  local low = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  low:SetPoint("TOPLEFT", slider, "BOTTOMLEFT", 0, -2)
+  low:SetText(tostring(minVal))
+
+  -- Custom High label (numeric maxVal) below the right end of the slider
   local high = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  high:SetPoint("TOPLEFT", slider, "TOPRIGHT", 0, -22)
+  high:SetPoint("TOPRIGHT", slider, "BOTTOMRIGHT", 0, -2)
   high:SetText(tostring(maxVal))
 
   slider.title = title
