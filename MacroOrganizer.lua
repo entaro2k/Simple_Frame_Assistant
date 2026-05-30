@@ -271,6 +271,15 @@ function SFA:CMF_CreateWindow()
   win:SetScript("OnDragStop", function(f) f:StopMovingOrSizing() end)
   win:SetClampedToScreen(true)
   MkBD(win,0.04,0.04,0.07,0.97,0.35,0.35,0.48,1)
+  win:EnableKeyboard(false)
+  win:SetScript("OnKeyDown", function(self, key)
+    if key == "ESCAPE" then
+      self:SetPropagateKeyboardInput(false)
+      SFA:CMF_Close()
+    else
+      self:SetPropagateKeyboardInput(true)
+    end
+  end)
   win:Hide()
   CMF.window = win
 
@@ -432,6 +441,7 @@ function SFA:CMF_CreateWindow()
     if user then CMF.dirty=true; SFA:CMF_UpdateActionButtons() end
   end)
   nameBox:SetScript("OnEnterPressed",function(self) self:ClearFocus() end)
+  nameBox:SetScript("OnEscapePressed",function(self) self:ClearFocus(); SFA:CMF_Close() end)
   CMF.nameBox = nameBox
 
   -- Macro Commands
@@ -457,7 +467,7 @@ function SFA:CMF_CreateWindow()
   local bodyEdit = CreateFrame("EditBox",nil,bodyScroll)
   bodyEdit:SetSize(WIN_W-60,300)
   bodyEdit:SetMultiLine(true); bodyEdit:SetAutoFocus(false)
-  bodyEdit:EnableKeyboard(true); bodyEdit:SetMaxLetters(255)
+  bodyEdit:SetMaxLetters(255)
   bodyEdit:SetFontObject(ChatFontNormal or GameFontHighlightSmall)
   bodyEdit:SetTextColor(1,1,1,1); bodyEdit:SetJustifyH("LEFT"); bodyEdit:SetJustifyV("TOP")
   bodyEdit:SetTextInsets(4,4,4,4); bodyEdit:SetText("")
@@ -491,25 +501,26 @@ function SFA:CMF_CreateWindow()
     end
   end)
   bodyEdit:SetScript("OnKeyDown",function(self, key)
-    -- Block ALL propagation first — no keybindings fire while typing
+    -- Block ALL propagation — no keybindings fire while typing
     self:SetPropagateKeyboardInput(false)
-    if CMF.acFrame and CMF.acFrame:IsShown() then
+    if key == "ESCAPE" then
+      self:ClearFocus()
+      if CMF.acFrame then CMF.acFrame:Hide() end
+    elseif CMF.acFrame and CMF.acFrame:IsShown() then
       if key == "TAB" then
         SFA:CMF_ApplyAutocomplete()
       elseif key == "UP" then
         SFA:CMF_NavigateAC(-1)
       elseif key == "DOWN" then
         SFA:CMF_NavigateAC(1)
-      elseif key == "ESCAPE" then
-        CMF.acFrame:Hide(); CMF.acSelected=0
-        if CMF.acHint then CMF.acHint:Hide() end
       end
     end
-    -- EditBox handles all other keys (text input, cursor movement) natively
   end)
-  bodyEdit:SetScript("OnKeyUp",function(self)
-    self:SetPropagateKeyboardInput(false)
+  bodyEdit:SetScript("OnEscapePressed", function(self)
+    self:ClearFocus()
+    if CMF.acFrame then CMF.acFrame:Hide() end
   end)
+  bodyEdit:SetScript("OnKeyUp", nil)
   bodyEdit:SetScript("OnEditFocusLost",function()
     C_Timer.After(0.15,function()
       if CMF.acFrame and not (CMF.acFrame.isHovered) then
@@ -803,43 +814,319 @@ end
 -- ICON POPUP
 -- ============================================================
 
-function SFA:CMF_OpenIconPopup()
-  if not CMF.selected then return end
-  if not CMF.iconPopup then
-    local pop = CreateFrame("Frame",nil,CMF.window,"BackdropTemplate")
-    pop:SetSize(320,60); pop:SetPoint("TOP",CMF.window,"TOP",0,-38)
-    pop:SetFrameStrata("FULLSCREEN_DIALOG")
-    MkBD(pop,0.05,0.05,0.10,0.99,0.35,0.35,0.5,1)
-    local lbl = pop:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall")
-    lbl:SetPoint("TOPLEFT",8,-8); lbl:SetText("Icon name or ID (e.g. ability_druid_catform):")
-    local input = CreateFrame("EditBox",nil,pop,"InputBoxTemplate")
-    input:SetSize(220,22); input:SetPoint("TOPLEFT",8,-26)
-    input:SetAutoFocus(true); input:SetMaxLetters(128)
-    input:SetScript("OnEnterPressed",function(self)
-      local txt = self:GetText() or ""
-      if txt~="" then
-        CMF.pendingIcon=txt; CMF.dirty=true
-        local path = txt:find("\\") and txt or ("Interface\\Icons\\"..txt)
-        if CMF.selIconTex then CMF.selIconTex:SetTexture(path) end
-        SFA:CMF_UpdateActionButtons()
-      end
-      pop:Hide()
-    end)
-    input:SetScript("OnEscapePressed",function() pop:Hide() end)
-    pop.input = input
-    local ok = CreateFrame("Button",nil,pop,"UIPanelButtonTemplate")
-    ok:SetSize(58,22); ok:SetPoint("LEFT",input,"RIGHT",6,0); ok:SetText("OK")
-    ok:SetScript("OnClick",function() input:GetScript("OnEnterPressed")(input) end)
-    CMF.iconPopup = pop
+-- ============================================================
+-- ICON PICKER (grid, similar to native WoW MacroPopupFrame)
+-- ============================================================
+
+local ICON_PICKER = {}  -- state for the icon picker popup
+
+-- Known WoW icon names for the grid (subset of Interface\Icons\*)
+-- We populate dynamically using GetMacroIconInfo which returns (numIcons)
+-- and GetMacroIconInfo(index) which returns the texture path.
+
+local function SFA_BuildIconPicker()
+  if ICON_PICKER.frame then return end
+
+  local COLS_IP  = 10
+  local ROWS_IP  = 9
+  local CELL_S   = 36
+  local PAD      = 6
+  local PIC_W    = COLS_IP * CELL_S + (COLS_IP+1)*PAD + 20  -- +20 for scrollbar
+  local PIC_H    = ROWS_IP * CELL_S + (ROWS_IP+1)*PAD + 90
+
+  local pop = CreateFrame("Frame", "SFA_IconPickerFrame", UIParent, "BackdropTemplate")
+  pop:SetSize(PIC_W, PIC_H)
+  pop:SetPoint("CENTER")
+  pop:SetFrameStrata("FULLSCREEN_DIALOG")
+  pop:SetMovable(true)
+  pop:EnableMouse(true)
+  pop:RegisterForDrag("LeftButton")
+  pop:SetScript("OnDragStart", pop.StartMoving)
+  pop:SetScript("OnDragStop",  pop.StopMovingOrSizing)
+  MkBD(pop, 0.05,0.05,0.10,0.99, 0.4,0.4,0.6,1)
+  pop:Hide()
+  ICON_PICKER.frame = pop
+
+  -- Title
+  local title = pop:CreateFontString(nil,"OVERLAY","GameFontHighlight")
+  title:SetPoint("TOP",0,-10)
+  title:SetText("Choose an Icon:")
+
+  -- Search box
+  local searchBox = CreateFrame("EditBox", nil, pop, "InputBoxTemplate")
+  searchBox:SetSize(PIC_W - 40, 22)
+  searchBox:SetPoint("TOPLEFT", 10, -30)
+  searchBox:SetAutoFocus(false)
+  searchBox:SetMaxLetters(64)
+  ICON_PICKER.searchBox = searchBox
+
+  -- Scroll frame for the icon grid
+  local sf = CreateFrame("ScrollFrame", nil, pop, "UIPanelScrollFrameTemplate")
+  sf:SetPoint("TOPLEFT", 10, -58)
+  sf:SetPoint("BOTTOMRIGHT", -26, 50)
+  ICON_PICKER.scroll = sf
+
+  local grid = CreateFrame("Frame", nil, sf)
+  grid:SetSize(COLS_IP * CELL_S + (COLS_IP+1)*PAD, 1)  -- height set dynamically
+  sf:SetScrollChild(grid)
+  ICON_PICKER.grid = grid
+
+  -- Pre-create cell buttons
+  ICON_PICKER.cells = {}
+  for row = 0, 39 do   -- 40 rows * 10 cols = 400 cells, enough for full list
+    for col = 0, COLS_IP-1 do
+      local btn = CreateFrame("Button", nil, grid, "BackdropTemplate")
+      btn:SetSize(CELL_S, CELL_S)
+      btn:SetPoint("TOPLEFT",
+        PAD + col*(CELL_S+PAD),
+        -(PAD + row*(CELL_S+PAD)))
+      MkBD(btn, 0.1,0.1,0.15,1, 0.25,0.25,0.35,1)
+
+      local tex = btn:CreateTexture(nil,"ARTWORK")
+      tex:SetSize(CELL_S-4, CELL_S-4)
+      tex:SetPoint("CENTER")
+      btn.iconTex = tex
+
+      local hl = btn:CreateTexture(nil,"HIGHLIGHT")
+      hl:SetAllPoints(); hl:SetColorTexture(1,1,1,0.2)
+
+      local sel = btn:CreateTexture(nil,"OVERLAY")
+      sel:SetAllPoints(); sel:SetColorTexture(0.3,0.6,1,0.35); sel:Hide()
+      btn.selTex = sel
+
+      btn:SetScript("OnClick", function(self)
+        -- deselect previous
+        if ICON_PICKER.selectedBtn then
+          ICON_PICKER.selectedBtn.selTex:Hide()
+        end
+        ICON_PICKER.selectedBtn = self
+        self.selTex:Show()
+        ICON_PICKER.selectedIcon = self.iconPath
+      end)
+
+      ICON_PICKER.cells[#ICON_PICKER.cells+1] = btn
+    end
   end
-  local _,icon = GetMacroInfo(CMF.selected)
-  CMF.iconPopup.input:SetText(icon or "")
-  CMF.iconPopup:Show(); CMF.iconPopup.input:SetFocus()
+
+  -- Okay / Cancel buttons
+  local okBtn = CreateFrame("Button", nil, pop, "UIPanelButtonTemplate")
+  okBtn:SetSize(80,22); okBtn:SetText("Okay")
+  okBtn:SetPoint("BOTTOMRIGHT", pop, "BOTTOMRIGHT", -40, 14)
+  okBtn:SetScript("OnClick", function()
+    local icon = ICON_PICKER.selectedIcon
+    if icon and icon ~= "" then
+      CMF.pendingIcon = icon; CMF.dirty = true
+      if CMF.selIconTex then CMF.selIconTex:SetTexture(icon) end
+      SFA:CMF_UpdateActionButtons()
+    end
+    pop:Hide()
+  end)
+
+  local cancelBtn = CreateFrame("Button", nil, pop, "UIPanelButtonTemplate")
+  cancelBtn:SetSize(80,22); cancelBtn:SetText("Cancel")
+  cancelBtn:SetPoint("RIGHT", okBtn, "LEFT", -6, 0)
+  cancelBtn:SetScript("OnClick", function() pop:Hide() end)
+
+  -- Filter on search text change
+  searchBox:SetScript("OnTextChanged", function()
+    SFA_RefreshIconGrid(searchBox:GetText())
+  end)
+  searchBox:SetScript("OnEnterPressed", function()
+    if ICON_PICKER.visibleCount == 1 and ICON_PICKER.cells[1].iconPath then
+      ICON_PICKER.selectedIcon = ICON_PICKER.cells[1].iconPath
+    end
+    okBtn:GetScript("OnClick")()
+  end)
+  searchBox:SetScript("OnEscapePressed", function()
+    pop:Hide()
+  end)
+  pop:EnableKeyboard(false)
+  pop:SetScript("OnKeyDown", function(self, key)
+    if key == "ESCAPE" then
+      self:SetPropagateKeyboardInput(false)
+      pop:Hide()
+    else
+      self:SetPropagateKeyboardInput(true)
+    end
+  end)
+  pop:SetScript("OnShow", function(self) self:EnableKeyboard(true) end)
+  pop:SetScript("OnHide", function(self) self:EnableKeyboard(false) end)
 end
 
 -- ============================================================
--- REFRESH GRID
+-- HELPER: collect icon textures from MacroPopupFrame buttons
+-- First open: taint accepted once, icons cached in memory.
+-- Subsequent opens: instant from cache, no taint.
 -- ============================================================
+
+local SFA_ICON_CACHE = nil  -- nil = not yet collected
+
+local function SFA_ScanPopupButtons()
+  local list = {}
+  local seen = {}
+  if not MacroPopupFrame then return list end
+  local function scan(f, depth)
+    if depth > 8 then return end
+    local ok, n = pcall(function() return f:GetNumChildren() end)
+    if not ok or not n then return end
+    for i = 1, n do
+      local ok2, c = pcall(function() return select(i, f:GetChildren()) end)
+      if ok2 and c then
+        local ot = c:GetObjectType()
+        if ot == "Button" or ot == "CheckButton" then
+          local tex = nil
+          if c.GetNormalTexture then
+            local nt = c:GetNormalTexture()
+            if nt and nt.GetTexture then tex = nt:GetTexture() end
+          end
+          if tex then
+            local key = tostring(tex)
+            if not seen[key] then seen[key] = true; list[#list+1] = tex end
+          end
+        end
+        scan(c, depth + 1)
+      end
+    end
+  end
+  scan(MacroPopupFrame, 0)
+  return list
+end
+
+local SFA_Collecting = false
+
+local function SFA_DoCollect(onDone)
+  if SFA_Collecting then return end
+  SFA_Collecting = true
+
+  -- Show MacroFrame + click edit button (taint happens here, once per session)
+  if ShowMacroFrame then ShowMacroFrame()
+  elseif MacroFrame then MacroFrame:Show() end
+
+  local editBtn = _G["MacroEditButton"]
+  if editBtn then
+    local onclick = editBtn:GetScript("OnClick")
+    if onclick then pcall(onclick, editBtn, "LeftButton") end
+  end
+
+  -- Poll until MacroPopupFrame has icon textures
+  local attempts = 0
+  local function poll()
+    attempts = attempts + 1
+    local list = SFA_ScanPopupButtons()
+    if #list > 0 then
+      SFA_ICON_CACHE = list
+      SFA_Collecting = false
+      -- Hide native frames properly via HideUIPanel to deregister from panel manager
+      if MacroPopupFrame then MacroPopupFrame:Hide() end
+      if HideUIPanel and MacroFrame then HideUIPanel(MacroFrame)
+      elseif HideMacroFrame then HideMacroFrame()
+      elseif MacroFrame then MacroFrame:Hide() end
+      if onDone then onDone() end
+    elseif attempts < 40 then
+      C_Timer.After(0.1, poll)
+    else
+      SFA_ICON_CACHE = {}
+      SFA_Collecting = false
+      if MacroPopupFrame then MacroPopupFrame:Hide() end
+      if HideUIPanel and MacroFrame then HideUIPanel(MacroFrame)
+      elseif HideMacroFrame then HideMacroFrame()
+      elseif MacroFrame then MacroFrame:Hide() end
+      if onDone then onDone() end
+    end
+  end
+  C_Timer.After(0.15, poll)
+end
+
+function SFA:CMF_PrefetchIcons() end  -- no-op, collection happens on first picker open
+
+function SFA_RefreshIconGrid(filter)
+  filter = filter and filter:lower() or ""
+  local cells = ICON_PICKER.cells
+  local idx   = 0
+  for _, c in ipairs(cells) do c:Hide(); c.iconPath = nil end
+
+  local COLS_IP = 10
+  local CELL_S  = 36
+  local PAD     = 6
+
+  local function showIcon(tex)
+    if not tex then return end
+    local name = tostring(tex):lower()
+    if filter ~= "" and not name:find(filter, 1, true) then return end
+    idx = idx + 1
+    local c = cells[idx]
+    if not c then return end
+    c.iconPath = tex
+    c.iconTex:SetTexture(tex)
+    local row = math.floor((idx-1)/COLS_IP)
+    local col = (idx-1) % COLS_IP
+    c:ClearAllPoints()
+    c:SetPoint("TOPLEFT", PAD + col*(CELL_S+PAD), -(PAD + row*(CELL_S+PAD)))
+    c:Show()
+    if ICON_PICKER.selectedIcon and tostring(tex) == tostring(ICON_PICKER.selectedIcon) then
+      c.selTex:Show(); ICON_PICKER.selectedBtn = c
+    else
+      c.selTex:Hide()
+    end
+  end
+
+  local numIcons = GetNumMacroIcons and GetNumMacroIcons() or 0
+  if numIcons > 0 then
+    for i = 1, numIcons do showIcon(GetMacroIconInfo(i)) end
+  elseif SFA_ICON_CACHE then
+    for _, tex in ipairs(SFA_ICON_CACHE) do showIcon(tex) end
+  end
+
+  ICON_PICKER.visibleCount = idx
+  local rows = math.ceil(math.max(idx, 1) / COLS_IP)
+  ICON_PICKER.grid:SetSize(
+    COLS_IP * CELL_S + (COLS_IP+1)*PAD,
+    rows * (CELL_S+PAD) + PAD)
+end
+
+function SFA:CMF_OpenIconPopup()
+  if not CMF.selected then return end
+
+  SFA_BuildIconPicker()
+
+  ICON_PICKER.selectedBtn  = nil
+  ICON_PICKER.selectedIcon = nil
+  ICON_PICKER.scroll:SetVerticalScroll(0)
+  ICON_PICKER.searchBox:SetText("")
+  ICON_PICKER.searchBox:ClearFocus()
+
+  local _, currentIcon = GetMacroInfo(CMF.selected)
+  if currentIcon then ICON_PICKER.selectedIcon = currentIcon end
+
+  ICON_PICKER.frame:Show()
+
+  if SFA_ICON_CACHE then
+    -- Cache ready (even if empty) — show immediately
+    SFA_RefreshIconGrid("")
+  else
+    -- First time: collect (taint once), then show
+    if not ICON_PICKER.loadingLabel then
+      local lbl = ICON_PICKER.grid:CreateFontString(nil,"OVERLAY","GameFontHighlight")
+      lbl:SetPoint("TOPLEFT",10,-10)
+      ICON_PICKER.loadingLabel = lbl
+    end
+    ICON_PICKER.loadingLabel:SetText("Loading icons...")
+    ICON_PICKER.loadingLabel:Show()
+
+    SFA_DoCollect(function()
+      if ICON_PICKER.loadingLabel then ICON_PICKER.loadingLabel:Hide() end
+      if ICON_PICKER.frame:IsShown() then
+        SFA_RefreshIconGrid(ICON_PICKER.searchBox:GetText() or "")
+      end
+    end)
+  end
+end
+
+SLASH_SFAICONS1 = "/sfaicons"
+SlashCmdList["SFAICONS"] = function()
+  SFA_ICON_CACHE = nil
+  print("|cffffff00SFA|r Icon cache cleared. Open the picker to reload.")
+end
 
 function SFA:CMF_RefreshGrid()
   if not CMF.cells then return end
@@ -991,11 +1278,15 @@ function SFA:CMF_Open()
   if CMF.selIconTex then CMF.selIconTex:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark") end
   if CMF.acFrame   then CMF.acFrame:Hide() end
   self:CMF_UpdateActionButtons(); self:CMF_RefreshGrid()
+  CMF.window:EnableKeyboard(true)
   CMF.window:Show(); CMF.window:Raise()
 end
 
 function SFA:CMF_Close()
-  if CMF.window then CMF.window:Hide() end
+  if CMF.window then
+    CMF.window:EnableKeyboard(false)
+    CMF.window:Hide()
+  end
   if CMF.iconPopup then CMF.iconPopup:Hide() end
   if CMF.acFrame then CMF.acFrame:Hide() end
 end
@@ -1004,6 +1295,10 @@ function SFA:CMF_Toggle()
   if CMF.window and CMF.window:IsShown() then self:CMF_Close()
   else self:CMF_Open() end
 end
+
+-- ============================================================
+-- SLASH HOOKS
+-- ============================================================
 
 -- ============================================================
 -- SLASH HOOKS
