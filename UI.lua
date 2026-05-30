@@ -1031,9 +1031,9 @@ syncSimRow(self.options.simRowDungeon, self.options.simRowDungeonX, self.options
 syncSimRow(self.options.simRowRaid10, self.options.simRowRaid10X, self.options.simRowRaid10Y, "raid10")
 syncSimRow(self.options.simRowRaid25, self.options.simRowRaid25X, self.options.simRowRaid25Y, "raid25")
 
-  if self.options.friendlyEnabled then self.options.friendlyEnabled:SetChecked(db.friendly.enabled) end
+  if self.options.friendlyEnabled then self.options.friendlyEnabled:SetChecked(self:GetCharEnabled("friendly")) end
   if self.options.friendlyDebuffs then self.options.friendlyDebuffs:SetChecked(db.friendly.showDebuffs) end
-  if self.options.enemyEnabled then self.options.enemyEnabled:SetChecked(db.enemy.enabled) end
+  if self.options.enemyEnabled then self.options.enemyEnabled:SetChecked(self:GetCharEnabled("enemy")) end
   if self.options.enemyDebuffs then self.options.enemyDebuffs:SetChecked(db.enemy.showDebuffs) end
   if self.options.enemyHealer then self.options.enemyHealer:SetChecked(db.enemy.healerMarker) end
   if self.options.enemyClass then self.options.enemyClass:SetChecked(db.enemy.classColor) end
@@ -1054,8 +1054,8 @@ function SFA:BuildGroupSection(parent, group, left, top)
   local title = CreateSectionHeader(parent, group == "friendly" and "Friendly Frames" or "Enemy Frames", left, top)
 
   local y = top - 34
-  local enabled = CreateCheckbox(parent, "Enable", left, y, db.enabled, function(val)
-    db.enabled = val
+  local enabled = CreateCheckbox(parent, "Enable", left, y, self:GetCharEnabled(group), function(val)
+    self:SetCharEnabled(group, val)
     self:RefreshGroup(group)
   end)
   y = y - 30
@@ -1203,7 +1203,7 @@ end
 
 function SFA:RefreshProcReadyUI()
   if not self.options or not self.options.procReadyRows then return end
-  local cfg = self.db and self.db.other and self.db.other.procReadyAlerts
+  local cfg = self:GetCharProcReadyConfig()
   local ids = {}
   for spellID, enabled in pairs((cfg and cfg.spells) or {}) do
     if enabled then ids[#ids + 1] = tonumber(spellID) end
@@ -1413,8 +1413,8 @@ function SFA:CreateOptionsPanel()
   if self.db.other.resourceVoiceAlerts.volume == nil then self.db.other.resourceVoiceAlerts.volume = 5 end
   if self.db.other.resourceVoiceAlerts.voiceStyle ~= "female" then self.db.other.resourceVoiceAlerts.voiceStyle = "male" end
 
-  local otherResourceVoice = CreateCheckbox(otherContent, "Voice alert when builder-spender resource is full", 24, -248, self.db.other.resourceVoiceAlerts.enabled == true, function(val)
-    self.db.other.resourceVoiceAlerts.enabled = val
+  local otherResourceVoice = CreateCheckbox(otherContent, "Voice alert when builder-spender resource is full", 24, -248, self:GetCharResourceVoiceEnabled(), function(val)
+    self:SetCharResourceVoiceEnabled(val)
     if val and SFA.PreviewFullResourceVoice then
       SFA:PreviewFullResourceVoice()
     end
@@ -1448,8 +1448,9 @@ function SFA:CreateOptionsPanel()
   procReadyHelp:SetJustifyH("LEFT")
   procReadyHelp:SetText("Add spell IDs or spell names to announce PROC READY once when they become usable and off cooldown in combat. Uses the existing voice volume and voice alert cooldown.")
 
-  local procReadyEnabled = CreateCheckbox(otherContent, "Enable proc ready voice alerts", 24, -570, self.db.other.procReadyAlerts.enabled == true, function(val)
-    self.db.other.procReadyAlerts.enabled = val
+  local procReadyEnabled = CreateCheckbox(otherContent, "Enable proc ready voice alerts", 24, -570, self:GetCharProcReadyConfig() and self:GetCharProcReadyConfig().enabled == true or false, function(val)
+    local cfg = self:GetCharProcReadyConfig()
+    if cfg then cfg.enabled = val end
     if not val and SFA.ResetProcReadyStates then SFA:ResetProcReadyStates() end
   end)
 

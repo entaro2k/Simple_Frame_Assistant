@@ -130,6 +130,20 @@ function SFA:InitializeDB()
   SFA_DB_Char.clicks.friendly = SFA_DB_Char.clicks.friendly or {}
   SFA_DB_Char.clicks.enemy    = SFA_DB_Char.clicks.enemy    or {}
 
+  -- Per-character: friendly/enemy enabled toggles
+  if SFA_DB_Char.friendlyEnabled == nil then SFA_DB_Char.friendlyEnabled = true end
+  if SFA_DB_Char.enemyEnabled    == nil then SFA_DB_Char.enemyEnabled    = true end
+
+  -- Per-character: voice alert when builder-spender resource is full
+  SFA_DB_Char.resourceVoiceAlerts = SFA_DB_Char.resourceVoiceAlerts or {}
+  if SFA_DB_Char.resourceVoiceAlerts.enabled == nil then SFA_DB_Char.resourceVoiceAlerts.enabled = false end
+
+  -- Per-character: proc ready voice alerts + monitored spells
+  SFA_DB_Char.procReadyAlerts = SFA_DB_Char.procReadyAlerts or {}
+  if SFA_DB_Char.procReadyAlerts.enabled == nil then SFA_DB_Char.procReadyAlerts.enabled = false end
+  SFA_DB_Char.procReadyAlerts.spells    = SFA_DB_Char.procReadyAlerts.spells    or {}
+  SFA_DB_Char.procReadyAlerts.cooldowns = SFA_DB_Char.procReadyAlerts.cooldowns or {}
+
   -- Merge defaults for clicks if not yet set per character
   local defaultButtons = { "LeftButton", "RightButton", "MiddleButton", "Button4", "Button5" }
   for _, btn in ipairs(defaultButtons) do
@@ -152,6 +166,42 @@ end
 
 function SFA:GetGroupDB(group)
   return self.db and self.db[group]
+end
+
+-- Per-character: friendly / enemy enabled
+function SFA:GetCharEnabled(group)
+  if not self.charDB then return true end
+  local key = (group == "friendly") and "friendlyEnabled" or "enemyEnabled"
+  local v = self.charDB[key]
+  return (v == nil) and true or v
+end
+
+function SFA:SetCharEnabled(group, val)
+  if not self.charDB then return end
+  local key = (group == "friendly") and "friendlyEnabled" or "enemyEnabled"
+  self.charDB[key] = val and true or false
+end
+
+-- Per-character: resource voice alert enabled
+function SFA:GetCharResourceVoiceEnabled()
+  return self.charDB and self.charDB.resourceVoiceAlerts and
+         self.charDB.resourceVoiceAlerts.enabled == true
+end
+
+function SFA:SetCharResourceVoiceEnabled(val)
+  if not self.charDB then return end
+  self.charDB.resourceVoiceAlerts = self.charDB.resourceVoiceAlerts or {}
+  self.charDB.resourceVoiceAlerts.enabled = val and true or false
+end
+
+-- Per-character: proc ready config (enabled + spells list)
+function SFA:GetCharProcReadyConfig()
+  if not self.charDB then return nil end
+  self.charDB.procReadyAlerts = self.charDB.procReadyAlerts or {}
+  self.charDB.procReadyAlerts.enabled   = self.charDB.procReadyAlerts.enabled   or false
+  self.charDB.procReadyAlerts.spells    = self.charDB.procReadyAlerts.spells    or {}
+  self.charDB.procReadyAlerts.cooldowns = self.charDB.procReadyAlerts.cooldowns or {}
+  return self.charDB.procReadyAlerts
 end
 
 function SFA:GetClickMacro(group, button)

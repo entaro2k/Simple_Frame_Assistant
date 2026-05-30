@@ -414,7 +414,8 @@ end
 
 function SFA:PlayResourceVoiceFile(ignoreFullCheck)
   local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
-  if not (cfg and cfg.enabled) then return end
+  if not cfg then return end
+  if not self:GetCharResourceVoiceEnabled() then return end
   if not ignoreFullCheck and not self:IsBuilderSpenderFull() then return end
 
   local powerType, info = self:GetBuilderSpenderResourceInfo()
@@ -466,11 +467,7 @@ function SFA:PreviewFullResourceVoice()
 end
 
 function SFA:GetProcReadyConfig()
-  if not (self.db and self.db.other) then return nil end
-  self.db.other.procReadyAlerts = self.db.other.procReadyAlerts or { enabled = false, spells = {} }
-  self.db.other.procReadyAlerts.spells = self.db.other.procReadyAlerts.spells or {}
-  self.db.other.procReadyAlerts.cooldowns = self.db.other.procReadyAlerts.cooldowns or {}
-  return self.db.other.procReadyAlerts
+  return self:GetCharProcReadyConfig()
 end
 
 function SFA:AddProcReadySpell(spellID)
@@ -703,7 +700,8 @@ end
 
 function SFA:CheckFullResourceVoiceOnReachFull()
   local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
-  if not (cfg and cfg.enabled) then return end
+  if not cfg then return end
+  if not self:GetCharResourceVoiceEnabled() then return end
 
   local isFull = self:IsBuilderSpenderFull()
   if isFull and not self.wasBuilderSpenderFull then
@@ -2175,7 +2173,7 @@ function SFA:RefreshGroup(group)
   local cfg = self.db[group]
   local inCombat = InCombatLockdown()
 
-  if not cfg.enabled then
+  if not self:GetCharEnabled(group) then
     if inCombat then
       self.pendingVisibility = true
       return
