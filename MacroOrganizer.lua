@@ -1011,9 +1011,7 @@ local function SFA_DoCollect(onDone)
   if loader then pcall(loader, "Blizzard_MacroUI") end
 
   -- Show MacroFrame + click edit button (taint happens here, once per session)
-  -- Use the original (un-hooked) ShowMacroFrame so we get the native frame.
-  local showFn = SFA._origShowMacroFrame or ShowMacroFrame
-  if showFn then showFn()
+  if ShowMacroFrame then ShowMacroFrame()
   elseif MacroFrame then MacroFrame:Show() end
 
   -- MacroEditButton's OnClick is what populates MacroPopupFrame with icons.
@@ -1047,8 +1045,7 @@ local function SFA_DoCollect(onDone)
     elseif attempts < 60 then
       -- Keep nudging the native UI to open/populate the icon popup
       if attempts % 5 == 0 then
-        local sf = SFA._origShowMacroFrame or ShowMacroFrame
-        if sf then sf()
+        if ShowMacroFrame then ShowMacroFrame()
         elseif MacroFrame then MacroFrame:Show() end
         clickEdit()
       end
@@ -1353,43 +1350,34 @@ function SFA:MacroFrame_UpdateSlashHook()
   end
 end
 
--- Redirect the Game Menu "Macros" button (and any ShowMacroFrame call)
--- to the custom SFA window when the redesign option is enabled.
+-- Redirect the Game Menu "Macros" button to the custom SFA window
+-- when the redesign option is enabled. Uses a non-tainting OnShow hook
+-- on MacroFrame instead of overriding protected globals.
 function SFA:MacroFrame_HookGameMenu()
   if SFA._macroGameMenuHooked then return end
+
+  -- MacroFrame is load-on-demand; ensure it exists before hooking.
+  local loader = C_AddOns and C_AddOns.LoadAddOn or LoadAddOn
+  if loader then pcall(loader, "Blizzard_MacroUI") end
+  if not MacroFrame then return end  -- will retry on next call
+
   SFA._macroGameMenuHooked = true
 
-  -- ToggleMacroFrame is what the Game Menu "Macros" button calls.
-  if type(ToggleMacroFrame) == "function" and not SFA._origToggleMacroFrame then
-    SFA._origToggleMacroFrame = ToggleMacroFrame
-    ToggleMacroFrame = function(...)
-      if SFA.db and SFA.db.other and SFA.db.other.redesignMacroWindow then
-        -- Close the game menu if open, then show our window
-        if GameMenuFrame and GameMenuFrame:IsShown() then HideUIPanel(GameMenuFrame) end
-        SFA:CMF_Toggle()
-        return
-      end
-      return SFA._origToggleMacroFrame(...)
+  -- HookScript runs AFTER the frame shows and does NOT taint execution.
+  MacroFrame:HookScript("OnShow", function(self)
+    -- If our collector opened it intentionally, leave it alone.
+    if SFA._iconCollecting then return end
+    -- If redesign is enabled, swap to the custom window.
+    if SFA.db and SFA.db.other and SFA.db.other.redesignMacroWindow then
+      -- Hide the native frame on the next frame to avoid interfering mid-show.
+      C_Timer.After(0, function()
+        if HideUIPanel then HideUIPanel(self) else self:Hide() end
+        if not (CMF.window and CMF.window:IsShown()) then
+          SFA:CMF_Open()
+        end
+      end)
     end
-  end
-
-  -- Some clients call ShowMacroFrame directly from the menu.
-  if type(ShowMacroFrame) == "function" and not SFA._origShowMacroFrame then
-    SFA._origShowMacroFrame = ShowMacroFrame
-    -- NOTE: we still need the original for icon collection, so only redirect
-    -- when the call did NOT come from our own collector.
-    ShowMacroFrame = function(...)
-      if SFA._iconCollecting then
-        return SFA._origShowMacroFrame(...)
-      end
-      if SFA.db and SFA.db.other and SFA.db.other.redesignMacroWindow then
-        if GameMenuFrame and GameMenuFrame:IsShown() then HideUIPanel(GameMenuFrame) end
-        SFA:CMF_Open()
-        return
-      end
-      return SFA._origShowMacroFrame(...)
-    end
-  end
+  end)
 end
 
 SLASH_SFAMACRO1 = "/sfamacro"
