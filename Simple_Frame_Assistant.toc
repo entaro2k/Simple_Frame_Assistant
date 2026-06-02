@@ -3,7 +3,7 @@
 ## Title: Simple Frame Assistant
 ## Notes: Simple Midnight-only friendly/enemy frame assistant.
 ## Author: En Taro
-## Version: 0.22.62
+## Version: 0.22.63
 ## SavedVariables: SFA_DB
 ## SavedVariablesPerCharacter: SFA_DB_Char
 

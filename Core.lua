@@ -1283,6 +1283,81 @@ function SFA:IsHealerUnit(unit, frame)
 end
 
 
+-- Returns true if a conditional body already specifies a target
+-- (either an @unit token or a target=unit clause).
+local function SFA_CondHasTarget(condBody)
+  if not condBody then return false end
+  if condBody:find("@", 1, true) then return true end
+  if condBody:lower():find("target%s*=") then return true end
+  return false
+end
+
+-- Processes a single ";"-separated segment of a cast/use command,
+-- injecting @<unit> into any conditional that lacks a target,
+-- or prepending [@<unit>] when the segment has a spell but no conditional.
+local function SFA_ProcessSegment(seg, unit)
+  local leadWs = seg:match("^(%s*)") or ""
+  local body = seg:sub(#leadWs + 1)
+
+  -- Pull off all leading [..] conditional blocks
+  local conds = {}
+  while true do
+    local cond = body:match("^(%[[^%]]*%])")
+    if not cond then break end
+    conds[#conds + 1] = cond
+    body = body:sub(#cond + 1)
+  end
+  local spell = body
+
+  if #conds == 0 then
+    -- No conditional. If there's an actual spell, bind it to the frame unit.
+    if spell:match("%S") then
+      return leadWs .. "[@" .. unit .. "]" .. spell
+    end
+    return seg
+  end
+
+  local rebuilt = {}
+  for _, cond in ipairs(conds) do
+    local inner = cond:sub(2, -2) -- strip [ ]
+    if SFA_CondHasTarget(inner) then
+      rebuilt[#rebuilt + 1] = cond
+    elseif inner:match("^%s*$") then
+      rebuilt[#rebuilt + 1] = "[@" .. unit .. "]"
+    else
+      rebuilt[#rebuilt + 1] = "[@" .. unit .. "," .. inner .. "]"
+    end
+  end
+  return leadWs .. table.concat(rebuilt) .. spell
+end
+
+-- Resolves a click macro for a given unit:
+--   1. Replaces any explicit @unit token with @<unit> (legacy behavior).
+--   2. Auto-injects @<unit> into cast/use clauses that have no target.
+local function SFA_ResolveMacroForUnit(macroText, unit)
+  macroText = tostring(macroText):gsub("@unit", "@" .. unit)
+
+  local outLines = {}
+  for line in (macroText .. "\n"):gmatch("(.-)\n") do
+    local cmd, rest = line:match("^(%s*/%w+%s*)(.*)$")
+    local lower = line:lower()
+    local isCast = lower:find("^%s*/cast")
+      or lower:find("^%s*/use")
+      or lower:find("^%s*/target")
+      or lower:find("^%s*/focus")
+    if cmd and isCast then
+      local segments = {}
+      for seg in (rest .. ";"):gmatch("(.-);") do
+        segments[#segments + 1] = SFA_ProcessSegment(seg, unit)
+      end
+      outLines[#outLines + 1] = cmd .. table.concat(segments, ";")
+    else
+      outLines[#outLines + 1] = line
+    end
+  end
+  return table.concat(outLines, "\n")
+end
+
 function SFA:ApplyClickBindings(frame, group)
   if not frame then return end
 
@@ -1304,7 +1379,7 @@ function SFA:ApplyClickBindings(frame, group)
   for button, keys in pairs(allowedButtons) do
     local macroText = clicks[button]
     if macroText and macroText ~= "" and unit then
-      local resolved = tostring(macroText):gsub("@unit", "@" .. unit)
+      local resolved = SFA_ResolveMacroForUnit(macroText, unit)
       frame:SetAttribute(keys[1], "macro")
       frame:SetAttribute(keys[2], resolved)
       frame:SetAttribute(keys[3], "macro")
