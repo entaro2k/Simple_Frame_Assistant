@@ -37,6 +37,9 @@ local function GetAddonVersion()
 end
 
 SFA.frames = { friendly = {}, enemy = {} }
+-- Vertical space reserved under a frame so its debuff row (icons
+-- anchored to BOTTOMRIGHT) stays visible and does not overlap the frame below.
+SFA.DEBUFF_ROW_HEIGHT = 10
 SFA.headers = {}
 SFA.pendingRefresh = false
 SFA.pendingLayout = false
@@ -2666,8 +2669,14 @@ function SFA:ApplyLayout(group)
     columns, rows = self:GetFriendlyLayoutMetrics(visibleCount)
   end
 
+  -- For friendly frames, reserve extra vertical space per row for the debuff
+  -- icons anchored under each frame, so they stay visible between units.
+  -- Enemy frames keep their original spacing (no reserve).
+  local debuffReserve = (group == "friendly" and cfg.showDebuffs) and self.DEBUFF_ROW_HEIGHT or 0
+  local rowStride = cfg.height + cfg.spacing + debuffReserve
+
   local totalWidth = (cfg.width * columns) + (columnGap * math.max(columns - 1, 0))
-  local totalHeight = (cfg.height * rows) + ((rows - 1) * cfg.spacing) + 20
+  local totalHeight = (cfg.height * rows) + ((rows - 1) * (cfg.spacing + debuffReserve)) + debuffReserve + 20
   header:SetSize(totalWidth, totalHeight)
   if header.dragOverlay then
     header.dragOverlay:ClearAllPoints()
@@ -2686,7 +2695,7 @@ function SFA:ApplyLayout(group)
         local col = math.floor(index / 5)
         local row = index % 5
         local x = -(col * (cfg.width + columnGap))
-        local y = -(row * (cfg.height + cfg.spacing))
+        local y = -(row * rowStride)
         frame:SetPoint("TOPRIGHT", header, "TOPRIGHT", x, y)
       else
         if i == 1 then
@@ -2694,7 +2703,7 @@ function SFA:ApplyLayout(group)
         else
           local prev = self.frames[group][i - 1]
           if prev and ((prev.unit ~= nil) or (prev.simulationData ~= nil and self:IsSimulationEnabled())) then
-            frame:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -cfg.spacing)
+            frame:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -(cfg.spacing + debuffReserve))
           else
             frame:SetPoint("TOPLEFT", header, "TOPLEFT", 0, 0)
           end
