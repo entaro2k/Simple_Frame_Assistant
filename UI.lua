@@ -127,8 +127,25 @@ local function UI_AC_Apply(state)
   if not sugs or sel<1 or sel>#sugs or not edit then return end
   local sug=sugs[sel]
   local text=edit:GetText() or ""
-  local cursor=state.cursorSnap or edit:GetCursorPosition()
-  local before=text:sub(1,cursor); local after=text:sub(cursor+1)
+  -- Read the live cursor at apply time. Using the stale cursorSnap could target the
+  -- wrong line if the editbox refreshed between suggestion and apply, which caused
+  -- autocomplete on line 2 to incorrectly rewrite line 1.
+  local cursor = edit:GetCursorPosition() or state.cursorSnap or 0
+  if cursor > #text then cursor = #text end
+
+  -- Split the full text at the cursor, then isolate just the current line so the
+  -- gsub replacements below operate strictly within that line and never reach back
+  -- into a previous line.
+  local beforeAll = text:sub(1, cursor)
+  local afterAll  = text:sub(cursor + 1)
+
+  -- Current line = text from the last newline before the cursor up to the cursor.
+  local lineStart = (beforeAll:match(".*()\n") or 1)
+  if beforeAll:sub(lineStart, lineStart) == "\n" then lineStart = lineStart + 1 end
+  local linePrefix = beforeAll:sub(1, lineStart - 1)   -- everything up to & including prior newline
+  local before     = beforeAll:sub(lineStart)          -- the part of the current line before the cursor
+  local after      = afterAll
+
   local newBefore
   if sug.mode=="slash" then
     newBefore=before:gsub("(/%S*)$",sug.insert)
@@ -150,7 +167,8 @@ local function UI_AC_Apply(state)
     if not newBefore or newBefore==before then newBefore=before..sug.insert.." " end
   end
   if newBefore and newBefore~=before then
-    edit:SetText(newBefore..after); edit:SetCursorPosition(#newBefore)
+    local rebuilt = linePrefix .. newBefore
+    edit:SetText(rebuilt..after); edit:SetCursorPosition(#rebuilt)
   end
 end
 
@@ -505,7 +523,7 @@ local function CreateMacroEditBox(parent, label, x, y, width, text, onCommit, on
 
   -- Display frame in options panel (read-only, shows current macro text)
   local bg = CreateFrame("Frame", nil, parent, "BackdropTemplate")
-  bg:SetSize(width, 44)
+  bg:SetSize(width, 56)
   bg:SetPoint("TOPLEFT", x, y - 18)
   if bg.SetBackdrop then
     bg:SetBackdrop({
@@ -518,13 +536,18 @@ local function CreateMacroEditBox(parent, label, x, y, width, text, onCommit, on
     bg:SetBackdropBorderColor(0.35,0.35,0.35,0.8)
   end
 
-  -- Text display inside the bg
+  -- Text display inside the bg. Shows the full macro including extra lines so the
+  -- user can see at a glance that a multi-line macro is stored (not just line 1).
   local display = bg:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall")
-  display:SetPoint("TOPLEFT",6,-6); display:SetPoint("TOPRIGHT",-6,-6)
+  display:SetPoint("TOPLEFT",6,-6); display:SetPoint("BOTTOMRIGHT",-58,6)
   display:SetJustifyH("LEFT"); display:SetJustifyV("TOP")
-  display:SetHeight(32)
-  display:SetText(text or "")
-  display:SetWordWrap(false)
+  display:SetWordWrap(true)
+  display:SetMaxLines(3)
+
+  -- Internal raw value keeps the real macro text (with newlines) so commits and
+  -- re-opens never lose lines, even if the visible FontString clips long content.
+  local rawText = text or ""
+  display:SetText(rawText)
 
   -- Edit button
   local editBtn = CreateFrame("Button",nil,bg,"UIPanelButtonTemplate")
@@ -537,14 +560,17 @@ local function CreateMacroEditBox(parent, label, x, y, width, text, onCommit, on
     local pop = GetMacroPopup()
     pop.titleStr:SetText(label)
     pop.onCommit = function(t)
+      rawText = t or ""
       if onCommit then onCommit(t) end
-      display:SetText(t)
+      display:SetText(rawText)
     end
-    pop.onChange = onChange
-    pop.edit:SetText(text or "")
+    pop.onChange = function(t)
+      rawText = t or ""
+      if onChange then onChange(t) end
+    end
+    -- Load the full stored macro text (with all lines), not the possibly clipped display.
+    pop.edit:SetText(rawText)
     pop.edit:SetCursorPosition(0)
-    -- Reread current text from display (may have been updated)
-    pop.edit:SetText(display:GetText() == "" and (text or "") or display:GetText())
     pop:SetPoint("CENTER")
     pop:Show()
     C_Timer.After(0.05, function() pop.edit:SetFocus() end)
@@ -559,10 +585,11 @@ local function CreateMacroEditBox(parent, label, x, y, width, text, onCommit, on
   fakeEdit.title = title
   fakeEdit.hint = nil
   fakeEdit.tip  = nil
-  fakeEdit.GetText = function() return display:GetText() end
+  fakeEdit.GetText = function() return rawText end
   fakeEdit.SetText = function(_, t)
+    rawText = t or ""
     text = t
-    display:SetText(t or "")
+    display:SetText(rawText)
   end
 
   return fakeEdit, title, bg, bg
@@ -1057,6 +1084,23 @@ syncSimRow(self.options.simRowRaid25, self.options.simRowRaid25X, self.options.s
   if self.options.targetColorDropDown then
     UIDropDownMenu_SetText(self.options.targetColorDropDown, text)
   end
+
+  -- Refresh per-spec click macro displays + spec name labels.
+  local specName = self:GetCurrentSpecName()
+  if self.options.friendlySpecLabel then
+    self.options.friendlySpecLabel:SetText("|cff7cc6ffClick macros for spec: " .. specName .. "|r")
+  end
+  if self.options.enemySpecLabel then
+    self.options.enemySpecLabel:SetText("|cff7cc6ffClick macros for spec: " .. specName .. "|r")
+  end
+  local function syncMacroDisplays(section, group)
+    if not section then return end
+    if section.leftClick   and section.leftClick.SetText   then section.leftClick:SetText(self:GetClickMacro(group, "LeftButton")) end
+    if section.rightClick  and section.rightClick.SetText  then section.rightClick:SetText(self:GetClickMacro(group, "RightButton")) end
+    if section.middleClick and section.middleClick.SetText then section.middleClick:SetText(self:GetClickMacro(group, "MiddleButton")) end
+  end
+  syncMacroDisplays(self.options.friendlySection, "friendly")
+  syncMacroDisplays(self.options.enemySection, "enemy")
 end
 
 function SFA:BuildGroupSection(parent, group, left, top)
@@ -1636,6 +1680,9 @@ friendlyPanel.OnRefresh = function() C_Timer.After(0, function() if SFA and SFA.
   local friendlySub = friendlyContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   friendlySub:SetPoint("TOPLEFT", friendlyTitle, "BOTTOMLEFT", 0, -6)
   friendlySub:SetText("Friendly frame options.")
+  local friendlySpecLabel = friendlyContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  friendlySpecLabel:SetPoint("TOPLEFT", friendlySub, "BOTTOMLEFT", 0, -4)
+  friendlySpecLabel:SetText("|cff7cc6ffClick macros are saved per specialization.|r")
 local friendlySection = self:BuildGroupSection(friendlyContent, "friendly", 24, -68)
 local friendlyClass = CreateCheckbox(friendlyContent, "Class color health bar", 24, -774, self.db.friendly.classColor, function(val)
   self.db.friendly.classColor = val
@@ -1686,6 +1733,9 @@ friendlyContent:SetHeight(1260)
   local enemySub = enemyContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   enemySub:SetPoint("TOPLEFT", enemyTitle, "BOTTOMLEFT", 0, -6)
   enemySub:SetText("Enemy frame options.")
+  local enemySpecLabel = enemyContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  enemySpecLabel:SetPoint("TOPLEFT", enemySub, "BOTTOMLEFT", 0, -4)
+  enemySpecLabel:SetText("|cff7cc6ffClick macros are saved per specialization.|r")
 local enemySection = self:BuildGroupSection(enemyContent, "enemy", 24, -68)
 local enemyClass = CreateCheckbox(enemyContent, "Class color health bar", 24, -774, self.db.enemy.classColor, function(val)
   self.db.enemy.classColor = val
@@ -1753,6 +1803,10 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
     friendlyDebuffs = friendlySection.debuffs,
     enemyEnabled = enemySection.enabled,
     enemyDebuffs = enemySection.debuffs,
+    friendlySection = friendlySection,
+    enemySection = enemySection,
+    friendlySpecLabel = friendlySpecLabel,
+    enemySpecLabel = enemySpecLabel,
     enemyClass = enemyClass,
     friendlyClass = friendlyClass,
     friendlyAutoShrink = friendlyAutoShrink,

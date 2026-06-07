@@ -130,6 +130,12 @@ function SFA:InitializeDB()
   SFA_DB_Char.clicks.friendly = SFA_DB_Char.clicks.friendly or {}
   SFA_DB_Char.clicks.enemy    = SFA_DB_Char.clicks.enemy    or {}
 
+  -- Per-character, per-specialization click macros.
+  -- Keyed by spec ID, each holding friendly/enemy button tables.
+  -- The legacy SFA_DB_Char.clicks tables are used as the fallback when a
+  -- spec has no stored macro yet (and seed the player's current spec on first run).
+  SFA_DB_Char.clicksBySpec = SFA_DB_Char.clicksBySpec or {}
+
   -- Per-character: friendly/enemy enabled toggles
   if SFA_DB_Char.friendlyEnabled == nil then SFA_DB_Char.friendlyEnabled = true end
   if SFA_DB_Char.enemyEnabled    == nil then SFA_DB_Char.enemyEnabled    = true end
@@ -162,6 +168,21 @@ function SFA:InitializeDB()
   if self.db.simulation then
     self.db.simulation.enabled = false
   end
+end
+
+-- Returns a short human-readable label for the current spec, e.g.
+-- "Feral", or "No specialization" when none is selected.
+function SFA:GetCurrentSpecName()
+  if GetSpecialization and GetSpecializationInfo then
+    local ok, idx = pcall(GetSpecialization)
+    if ok and idx then
+      local ok2, _, name = pcall(GetSpecializationInfo, idx)
+      if ok2 and name and name ~= "" then
+        return name
+      end
+    end
+  end
+  return "No specialization"
 end
 
 function SFA:GetGroupDB(group)
@@ -204,15 +225,61 @@ function SFA:GetCharProcReadyConfig()
   return self.charDB.procReadyAlerts
 end
 
+-- Returns the current player's specialization ID (e.g. 103 = Feral, 104 = Guardian),
+-- or nil if it cannot be determined (then we fall back to legacy shared macros).
+function SFA:GetCurrentSpecID()
+  if GetSpecialization and GetSpecializationInfo then
+    local ok, idx = pcall(GetSpecialization)
+    if ok and idx then
+      local ok2, specID = pcall(GetSpecializationInfo, idx)
+      if ok2 and specID and specID > 0 then
+        return specID
+      end
+    end
+  end
+  return nil
+end
+
+-- Returns the friendly/enemy click table for a given spec, creating it if needed.
+-- On first access for a spec, it is seeded from the legacy shared clicks so the
+-- player keeps their existing macros instead of starting empty.
+function SFA:GetSpecClickTable(group)
+  if not self.charDB then return nil end
+  local specID = self:GetCurrentSpecID()
+  if not specID then
+    -- No spec info available: use legacy shared storage.
+    self.charDB.clicks = self.charDB.clicks or {}
+    self.charDB.clicks[group] = self.charDB.clicks[group] or {}
+    return self.charDB.clicks[group]
+  end
+
+  self.charDB.clicksBySpec = self.charDB.clicksBySpec or {}
+  local specBucket = self.charDB.clicksBySpec[specID]
+  if not specBucket then
+    specBucket = {}
+    self.charDB.clicksBySpec[specID] = specBucket
+  end
+
+  if not specBucket[group] then
+    specBucket[group] = {}
+    -- Seed from legacy shared clicks (if any) so existing setups carry over.
+    local legacy = self.charDB.clicks and self.charDB.clicks[group]
+    if type(legacy) == "table" then
+      for btn, txt in pairs(legacy) do
+        specBucket[group][btn] = txt
+      end
+    end
+  end
+  return specBucket[group]
+end
+
 function SFA:GetClickMacro(group, button)
-  -- Always read from per-character storage
-  return self.charDB and self.charDB.clicks and
-         self.charDB.clicks[group] and self.charDB.clicks[group][button] or ""
+  local tbl = self:GetSpecClickTable(group)
+  return (tbl and tbl[button]) or ""
 end
 
 function SFA:SetClickMacro(group, button, text)
-  if not self.charDB then return end
-  self.charDB.clicks = self.charDB.clicks or {}
-  self.charDB.clicks[group] = self.charDB.clicks[group] or {}
-  self.charDB.clicks[group][button] = text or ""
+  local tbl = self:GetSpecClickTable(group)
+  if not tbl then return end
+  tbl[button] = text or ""
 end

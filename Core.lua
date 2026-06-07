@@ -1364,8 +1364,8 @@ end
 function SFA:ApplyClickBindings(frame, group)
   if not frame then return end
 
-  -- Use per-character click macros
-  local clicks = self.charDB and self.charDB.clicks and self.charDB.clicks[group]
+  -- Use per-character, per-spec click macros
+  local clicks = self:GetSpecClickTable(group)
   if type(clicks) ~= "table" then return end
 
   local unit = frame.unit
@@ -2953,6 +2953,19 @@ function SFA:OnEvent(event, ...)
     return
   end
 
+  if event == "PLAYER_SPECIALIZATION_CHANGED" then
+    -- Click macros are stored per-spec, so reapply bindings and refresh the
+    -- options panel so the displayed macros match the new specialization.
+    if not InCombatLockdown() then
+      self:RefreshGroup("friendly")
+      self:RefreshGroup("enemy")
+    else
+      self.pendingRefresh = true
+    end
+    if self.RefreshOptionsPanel then self:RefreshOptionsPanel() end
+    return
+  end
+
   if event == "PLAYER_REGEN_ENABLED" then
     self:StopProcReadyTicker()
     self:ResetProcReadyStates()
@@ -3089,6 +3102,7 @@ function SFA:RegisterEvents()
   self.eventFrame:RegisterEvent("SCENARIO_UPDATE")
   self.eventFrame:RegisterEvent("SCENARIO_CRITERIA_UPDATE")
   self.eventFrame:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
+  self.eventFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
 end
 
 SFA:RegisterEvents()
