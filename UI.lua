@@ -520,6 +520,7 @@ end
 
 local function CreateMacroEditBox(parent, label, x, y, width, text, onCommit, onChange)
   local title = CreateLabel(parent, label, x, y, "GameFontHighlightSmall")
+  title.baseLabel = label  -- remembered so we can re-append "(SpecName)" on refresh
 
   -- Display frame in options panel (read-only, shows current macro text)
   local bg = CreateFrame("Frame", nil, parent, "BackdropTemplate")
@@ -1098,6 +1099,16 @@ syncSimRow(self.options.simRowRaid25, self.options.simRowRaid25X, self.options.s
     if section.leftClick   and section.leftClick.SetText   then section.leftClick:SetText(self:GetClickMacro(group, "LeftButton")) end
     if section.rightClick  and section.rightClick.SetText  then section.rightClick:SetText(self:GetClickMacro(group, "RightButton")) end
     if section.middleClick and section.middleClick.SetText then section.middleClick:SetText(self:GetClickMacro(group, "MiddleButton")) end
+    -- Append the current spec name in parentheses to each macro label.
+    local suffix = (specName and specName ~= "No specialization") and (" (" .. specName .. ")") or ""
+    local function setLabel(editObj)
+      if editObj and editObj.title and editObj.title.baseLabel then
+        editObj.title:SetText(editObj.title.baseLabel .. suffix)
+      end
+    end
+    setLabel(section.leftClick)
+    setLabel(section.rightClick)
+    setLabel(section.middleClick)
   end
   syncMacroDisplays(self.options.friendlySection, "friendly")
   syncMacroDisplays(self.options.enemySection, "enemy")
