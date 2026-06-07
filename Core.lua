@@ -350,12 +350,12 @@ local SFA_BUILDER_SPENDER_POWER = {
 }
 
 local SFA_RESOURCE_VOICE_INFO = {
-  DRUID = { enum = "ComboPoints", fallback = 4, label = "COMBO FULL", file = "combo_full.ogg" },
-  ROGUE = { enum = "ComboPoints", fallback = 4, label = "COMBO FULL", file = "combo_full.ogg" },
-  PALADIN = { enum = "HolyPower", fallback = 9, label = "HOLY POWER FULL", file = "holy_power_full.ogg" },
-  MONK = { enum = "Chi", fallback = 12, label = "CHI FULL", file = "chi_full.ogg" },
-  WARLOCK = { enum = "SoulShards", fallback = 7, label = "SOUL SHARDS FULL", file = "soul_shards_full.ogg" },
-  EVOKER = { enum = "Essence", fallback = 19, label = "ESSENCE FULL", file = "essence_full.ogg" },
+  DRUID = { enum = "ComboPoints", fallback = 4, label = "COMBO FULL", file = "combo_full.ogg", tts = "Combo Points Full" },
+  ROGUE = { enum = "ComboPoints", fallback = 4, label = "COMBO FULL", file = "combo_full.ogg", tts = "Combo Points Full" },
+  PALADIN = { enum = "HolyPower", fallback = 9, label = "HOLY POWER FULL", file = "holy_power_full.ogg", tts = "Holy Power Full" },
+  MONK = { enum = "Chi", fallback = 12, label = "CHI FULL", file = "chi_full.ogg", tts = "Chi Full" },
+  WARLOCK = { enum = "SoulShards", fallback = 7, label = "SOUL SHARDS FULL", file = "soul_shards_full.ogg", tts = "Soul Shards Full" },
+  EVOKER = { enum = "Essence", fallback = 19, label = "ESSENCE FULL", file = "essence_full.ogg", tts = "Essence Full" },
 }
 
 function SFA:GetBuilderSpenderResourceInfo()
@@ -422,31 +422,15 @@ function SFA:PlayResourceVoiceFile(ignoreFullCheck)
   if not ignoreFullCheck and not self:IsBuilderSpenderFull() then return end
 
   local powerType, info = self:GetBuilderSpenderResourceInfo()
-  local file, sliderVolume = self:GetResourceVoiceVolumeFile(info)
-  if not (powerType and file) then return end
+  if not (powerType and info) then return end
 
-  local style = self:GetResourceVoiceStyle()
-  local path = [[Interface\AddOns\Simple_Frame_Assistant\media\]] .. style .. [[\]] .. file
-  local layers = self:GetResourceVoiceLayerCount(sliderVolume)
-  if layers <= 0 then return end
+  local sliderVolume = tonumber(cfg.volume) or 5
+  sliderVolume = math.floor(sliderVolume + 0.5)
+  if sliderVolume <= 0 then return end
+  if sliderVolume > 10 then sliderVolume = 10 end
 
-  PlaySoundFile(path, "Master")
-
-  if layers >= 2 and C_Timer and C_Timer.After then
-    C_Timer.After(0.035, function()
-      PlaySoundFile(path, "Master")
-    end)
-  elseif layers >= 2 then
-    PlaySoundFile(path, "Master")
-  end
-
-  if layers >= 3 and C_Timer and C_Timer.After then
-    C_Timer.After(0.07, function()
-      PlaySoundFile(path, "Master")
-    end)
-  elseif layers >= 3 then
-    PlaySoundFile(path, "Master")
-  end
+  -- Speak the resource name (e.g. "Combo Points Full") via TTS. No audio clips.
+  if info.tts then self:SpeakViaTTS(info.tts, sliderVolume) end
 end
 function SFA:PlayFullResourceVoiceReminder()
   local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
@@ -531,7 +515,12 @@ function SFA:NoteProcReadySpellCast(spellID)
   local state = self.procReadyState[id] or { announced = false, lastAlert = 0 }
   self.procReadyState[id] = state
 
-  state.announced = false
+  -- Just cast: treat as on cooldown now (the cooldown API may lag a moment).
+  -- Mark announced so the brief post-cast "still looks ready" window doesn't
+  -- fire a false alert; reset streaks so re-arm needs fresh consistent ticks.
+  state.announced = true
+  state.readyStreak = 0
+  state.notReadyStreak = 0
   state.lastCast = GetTime and GetTime() or 0
   state.wasReady = false
   state.wasOnCooldown = true
@@ -606,18 +595,11 @@ function SFA:IsProcReadySpellReady(spellID)
   return state.wasReady == true
 end
 
-function SFA:SpeakProcReadySpellName(spellID, sliderVolume)
-  -- Announce "<SpellName> Ready" via Text-To-Speech. Returns true on success.
-  -- On Midnight, C_VoiceChat.SpeakText runs without error but produces no audio;
-  -- the high-level Blizzard TextToSpeech_Speak API is the one that actually plays.
-  local id = tonumber(spellID)
-  if not id then return false end
-  local name = self:GetSpellNameSafe(id)
-  if not name or name == "" then return false end
-
-  if not _G.TextToSpeech_Speak then return false end
-
-  -- Resolve a usable voice object.
+function SFA:GetTTSVoiceObject()
+  if self._ttsVoiceCache ~= nil then
+    if self._ttsVoiceCache == false then return nil end
+    return self._ttsVoiceCache
+  end
   local voice
   if C_VoiceChat and C_VoiceChat.GetTtsVoices then
     local ok, v = pcall(C_VoiceChat.GetTtsVoices)
@@ -627,22 +609,128 @@ function SFA:SpeakProcReadySpellName(spellID, sliderVolume)
     local ok, v = pcall(_G.GetTTSVoices)
     if ok and type(v) == "table" then voice = v[1] end
   end
+  self._ttsVoiceCache = voice or false
+  return voice
+end
+
+-- Speak arbitrary text via the Blizzard TTS engine (the one that actually
+-- plays audio on Midnight). The 0-10 addon slider maps to the engine's
+-- internal 0-100 volume so louder slider = louder speech. Returns true on success.
+function SFA:SpeakViaTTS(text, sliderVolume)
+  if not text or text == "" then return false end
+  if not _G.TextToSpeech_Speak then return false end
+
+  local voice = self:GetTTSVoiceObject()
   if not voice then return false end
 
-  -- The Blizzard TTS engine has its own internal volume (C_TTSSettings),
-  -- independent of the addon's voice slider. Push it to max so proc alerts
-  -- are clearly audible.
+  local vol = tonumber(sliderVolume) or 5
+  vol = math.floor(vol + 0.5)
+  if vol <= 0 then return false end
+  if vol > 10 then vol = 10 end
+
+  -- Guard against re-triggering the same announcement back-to-back (e.g. from
+  -- flickering cooldown reads), so we never stack overlapping speech.
+  local now = GetTime and GetTime() or 0
+  if self._lastTTSStart and (now - self._lastTTSStart) < 0.6 then
+    return true
+  end
+  self._lastTTSStart = now
+
+  -- Volume is controlled by the TTS engine's own volume setting (max here).
   if C_TTSSettings and C_TTSSettings.SetSpeechVolume then
     pcall(C_TTSSettings.SetSpeechVolume, 100)
   end
-
-  local text = name .. " Ready"
-  local ok = pcall(_G.TextToSpeech_Speak, text, voice)
-  -- Speak a second overlapping layer for extra loudness (TTS volume caps at 100).
-  if ok and C_Timer and C_Timer.After then
-    C_Timer.After(0.04, function() pcall(_G.TextToSpeech_Speak, text, voice) end)
+  if C_TTSSettings and C_TTSSettings.SetSpeechRate then
+    pcall(C_TTSSettings.SetSpeechRate, 0)
   end
+
+  -- "Audio ducking": briefly lower the music and ambience so the spoken alert
+  -- stands out, then restore. The slider controls how aggressively other audio
+  -- is dipped (higher slider = quieter background = the voice is more prominent).
+  self:DuckAudioForTTS(vol)
+
+  -- Speak exactly ONCE. TextToSpeech_Speak queues utterances and plays them
+  -- sequentially, so issuing multiple copies produced "Chomp Ready, Chomp
+  -- Ready, Chomp Ready..." repeated aloud - that was the repetition being heard.
+  local ok = pcall(_G.TextToSpeech_Speak, text, voice)
   return ok == true
+end
+
+function SFA:DuckAudioForTTS(sliderVolume)
+  if not (GetCVar and SetCVar) then return end
+
+  local vol = tonumber(sliderVolume) or 5
+  if vol < 1 then vol = 1 end
+  if vol > 10 then vol = 10 end
+
+  -- How much of the background volume to keep, scaled by the slider:
+  --   slider 1  -> keep ~90% (barely ducked)
+  --   slider 10 -> keep ~20% (strongly ducked, voice very prominent)
+  local keepFactor = 0.9 - (vol - 1) * (0.7 / 9)
+  if keepFactor < 0.1 then keepFactor = 0.1 end
+  if keepFactor > 1.0 then keepFactor = 1.0 end
+
+  -- CVars whose volume we temporarily reduce so speech cuts through.
+  local cvars = { "Sound_MusicVolume", "Sound_AmbienceVolume" }
+
+  -- Save the originals only if we aren't already in the middle of a duck, so a
+  -- second alert during the dip doesn't capture the already-lowered values.
+  if not self._ttsDucking then
+    self._ttsDuckSaved = {}
+    for _, cv in ipairs(cvars) do
+      local ok, v = pcall(GetCVar, cv)
+      if ok and v ~= nil then
+        self._ttsDuckSaved[cv] = v
+      end
+    end
+    self._ttsDucking = true
+  end
+
+  -- Apply the reduced volumes.
+  for _, cv in ipairs(cvars) do
+    local saved = self._ttsDuckSaved and self._ttsDuckSaved[cv]
+    local base = tonumber(saved)
+    if base ~= nil then
+      pcall(SetCVar, cv, tostring(base * keepFactor))
+    end
+  end
+
+  -- (Re)schedule restoration. Each alert pushes the restore time out so the
+  -- background stays dipped until speech is actually done (~2s per utterance).
+  self._ttsDuckToken = (self._ttsDuckToken or 0) + 1
+  local myToken = self._ttsDuckToken
+  if C_Timer and C_Timer.After then
+    C_Timer.After(2.0, function()
+      if not SFA then return end
+      -- Only the most recent scheduled restore runs, to avoid restoring early
+      -- when alerts overlap.
+      if SFA._ttsDuckToken ~= myToken then return end
+      SFA:RestoreAudioAfterTTS()
+    end)
+  end
+end
+
+function SFA:RestoreAudioAfterTTS()
+  if not (SetCVar and self._ttsDuckSaved) then
+    self._ttsDucking = false
+    return
+  end
+  for cv, v in pairs(self._ttsDuckSaved) do
+    if v ~= nil then
+      pcall(SetCVar, cv, tostring(v))
+    end
+  end
+  self._ttsDuckSaved = nil
+  self._ttsDucking = false
+end
+
+function SFA:SpeakProcReadySpellName(spellID, sliderVolume)
+  -- Announce "<SpellName> Ready" via Text-To-Speech.
+  local id = tonumber(spellID)
+  if not id then return false end
+  local name = self:GetSpellNameSafe(id)
+  if not name or name == "" then return false end
+  return self:SpeakViaTTS(name .. " Ready", sliderVolume)
 end
 
 function SFA:PlayProcReadyVoice(spellID)
@@ -652,28 +740,8 @@ function SFA:PlayProcReadyVoice(spellID)
   if sliderVolume <= 0 then return end
   if sliderVolume > 10 then sliderVolume = 10 end
 
-  -- Prefer speaking the spell name (e.g. "Chomp Ready") when TTS is available.
-  if self:SpeakProcReadySpellName(spellID, sliderVolume) then return end
-
-  -- Fallback: pre-recorded "proc ready" voice clip.
-  local style = self:GetResourceVoiceStyle()
-  self.procReadyVoiceVariantIndex = (self.procReadyVoiceVariantIndex == 1) and 2 or 1
-  local file = "proc_ready_" .. tostring(self.procReadyVoiceVariantIndex) .. ".ogg"
-  local path = [[Interface\AddOns\Simple_Frame_Assistant\media\]] .. style .. [[\]] .. file
-  local layers = self:GetResourceVoiceLayerCount(sliderVolume)
-  if layers <= 0 then return end
-
-  PlaySoundFile(path, "Master")
-  if layers >= 2 and C_Timer and C_Timer.After then
-    C_Timer.After(0.035, function() PlaySoundFile(path, "Master") end)
-  elseif layers >= 2 then
-    PlaySoundFile(path, "Master")
-  end
-  if layers >= 3 and C_Timer and C_Timer.After then
-    C_Timer.After(0.07, function() PlaySoundFile(path, "Master") end)
-  elseif layers >= 3 then
-    PlaySoundFile(path, "Master")
-  end
+  -- Speak the spell name (e.g. "Chomp Ready") via TTS. No local audio clips.
+  self:SpeakProcReadySpellName(spellID, sliderVolume)
 end
 
 function SFA:ResetProcReadyStates()
@@ -728,17 +796,49 @@ function SFA:UpdateProcReadyAlerts()
   for spellID, enabled in pairs(cfg.spells or {}) do
     local id = tonumber(spellID)
     if enabled and id then
-      local state = self.procReadyState[id] or { announced = false, lastAlert = 0 }
-      self.procReadyState[id] = state
-      local ready = self:IsProcReadySpellReady(id)
-      if ready then
-        if not state.announced and (now - (state.lastAlert or 0)) >= cooldown then
-          state.announced = true
-          state.lastAlert = now
-          self:PlayProcReadyVoice(id)
+      local state = self.procReadyState[id]
+      if not state then
+        state = { announced = false, lastAlert = 0 }
+        self.procReadyState[id] = state
+      end
+
+      local usable = self:IsProcReadySpellUsable(id)
+      local onCd = self:IsProcReadySpellOnCooldown(id)
+      local ready = (usable == true and onCd ~= true)
+
+      -- Announce when the spell becomes ready and we haven't announced this
+      -- activation yet. This fires on the rising edge for both:
+      --   Feral Frenzy: ready the moment it leaves cooldown.
+      --   Chomp: ready the moment its proc/condition turns usable while off CD.
+      if ready and not state.announced and (now - (state.lastAlert or 0)) >= cooldown then
+        state.announced = true
+        state.lastAlert = now
+        self:PlayProcReadyVoice(id)
+        if self.procReadyDebug then
+          DEFAULT_CHAT_FRAME:AddMessage("|cff7cc6ffSFA:|r announce " .. id .. " usable=" .. tostring(usable) .. " onCD=" .. tostring(onCd))
         end
+      end
+
+      -- Re-arm when the spell has actually gone on cooldown (reliable "used"
+      -- signal), OR when it has been clearly NOT usable for several consecutive
+      -- ticks. The multi-tick requirement filters out the rapid 1-tick flicker
+      -- of the usable flag (e.g. Feral Frenzy with energy) that previously
+      -- caused repeated alerts, while still re-arming for proc-gated spells like
+      -- Chomp whose proc genuinely drops for a sustained period.
+      if not ready then
+        state.notUsableStreak = (state.notUsableStreak or 0) + 1
       else
+        state.notUsableStreak = 0
+      end
+
+      local wentOnCd = (onCd == true)
+      local sustainedNotReady = (state.notUsableStreak or 0) >= 4  -- ~0.8s
+
+      if state.announced and (wentOnCd or sustainedNotReady) then
         state.announced = false
+        if self.procReadyDebug then
+          DEFAULT_CHAT_FRAME:AddMessage("|cff7cc6ffSFA:|r re-arm " .. id .. (wentOnCd and " (on cooldown)" or " (proc dropped)"))
+        end
       end
     end
   end
@@ -3063,7 +3163,10 @@ function SFA:OnEvent(event, ...)
 elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
   local unit = ...
   if unit == "player" then
-    self:PlayFullResourceVoiceReminder()
+    -- Re-check full state after a cast (handles spending then refilling),
+    -- but let edge-detection decide whether to actually announce so it
+    -- doesn't repeat every cast while already full.
+    self:CheckFullResourceVoiceOnReachFull()
   end
 
 elseif event == "UNIT_POWER_UPDATE" or event == "UNIT_POWER_FREQUENT" then

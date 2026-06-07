@@ -1877,6 +1877,14 @@ function SFA:RegisterSlash()
   SlashCmdList.SIMPLEFRAMEASSISTANT = function()
     SFA:OpenOptions()
   end
+
+  -- Toggle proc-alert debug: prints "announce <id>" / "re-arm <id>" in chat so
+  -- repeated alerts can be traced. Off by default; harmless to leave shipped.
+  SLASH_SFAPROCDEBUG1 = "/sfaprocdebug"
+  SlashCmdList.SFAPROCDEBUG = function()
+    SFA.procReadyDebug = not SFA.procReadyDebug
+    DEFAULT_CHAT_FRAME:AddMessage("|cff7cc6ffSFA:|r proc debug " .. (SFA.procReadyDebug and "ON" or "OFF"))
+  end
 end
 
 

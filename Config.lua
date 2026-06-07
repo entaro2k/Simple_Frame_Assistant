@@ -222,6 +222,27 @@ function SFA:GetCharProcReadyConfig()
   self.charDB.procReadyAlerts.enabled   = self.charDB.procReadyAlerts.enabled   or false
   self.charDB.procReadyAlerts.spells    = self.charDB.procReadyAlerts.spells    or {}
   self.charDB.procReadyAlerts.cooldowns = self.charDB.procReadyAlerts.cooldowns or {}
+
+  -- SavedVariables can turn numeric table keys into strings on reload. Normalize
+  -- both tables so every spell ID is a number key. Without this, lookups like
+  -- cfg.spells[numericID] miss (the key is "1244258" not 1244258), which broke
+  -- the spell-cast bookkeeping and caused proc alerts to repeat endlessly.
+  local spells = self.charDB.procReadyAlerts.spells
+  local fixedSpells = {}
+  for k, v in pairs(spells) do
+    local nk = tonumber(k)
+    if nk then fixedSpells[nk] = v else fixedSpells[k] = v end
+  end
+  self.charDB.procReadyAlerts.spells = fixedSpells
+
+  local cds = self.charDB.procReadyAlerts.cooldowns
+  local fixedCds = {}
+  for k, v in pairs(cds) do
+    local nk = tonumber(k)
+    if nk then fixedCds[nk] = v else fixedCds[k] = v end
+  end
+  self.charDB.procReadyAlerts.cooldowns = fixedCds
+
   return self.charDB.procReadyAlerts
 end
 
