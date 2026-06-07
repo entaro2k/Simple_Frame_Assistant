@@ -606,13 +606,56 @@ function SFA:IsProcReadySpellReady(spellID)
   return state.wasReady == true
 end
 
-function SFA:PlayProcReadyVoice()
+function SFA:SpeakProcReadySpellName(spellID, sliderVolume)
+  -- Announce "<SpellName> Ready" via Text-To-Speech. Returns true on success.
+  -- On Midnight, C_VoiceChat.SpeakText runs without error but produces no audio;
+  -- the high-level Blizzard TextToSpeech_Speak API is the one that actually plays.
+  local id = tonumber(spellID)
+  if not id then return false end
+  local name = self:GetSpellNameSafe(id)
+  if not name or name == "" then return false end
+
+  if not _G.TextToSpeech_Speak then return false end
+
+  -- Resolve a usable voice object.
+  local voice
+  if C_VoiceChat and C_VoiceChat.GetTtsVoices then
+    local ok, v = pcall(C_VoiceChat.GetTtsVoices)
+    if ok and type(v) == "table" and v[1] then voice = v[1] end
+  end
+  if not voice and _G.GetTTSVoices then
+    local ok, v = pcall(_G.GetTTSVoices)
+    if ok and type(v) == "table" then voice = v[1] end
+  end
+  if not voice then return false end
+
+  -- The Blizzard TTS engine has its own internal volume (C_TTSSettings),
+  -- independent of the addon's voice slider. Push it to max so proc alerts
+  -- are clearly audible.
+  if C_TTSSettings and C_TTSSettings.SetSpeechVolume then
+    pcall(C_TTSSettings.SetSpeechVolume, 100)
+  end
+
+  local text = name .. " Ready"
+  local ok = pcall(_G.TextToSpeech_Speak, text, voice)
+  -- Speak a second overlapping layer for extra loudness (TTS volume caps at 100).
+  if ok and C_Timer and C_Timer.After then
+    C_Timer.After(0.04, function() pcall(_G.TextToSpeech_Speak, text, voice) end)
+  end
+  return ok == true
+end
+
+function SFA:PlayProcReadyVoice(spellID)
   local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
   local sliderVolume = tonumber(cfg and cfg.volume) or 5
   sliderVolume = math.floor(sliderVolume + 0.5)
   if sliderVolume <= 0 then return end
   if sliderVolume > 10 then sliderVolume = 10 end
 
+  -- Prefer speaking the spell name (e.g. "Chomp Ready") when TTS is available.
+  if self:SpeakProcReadySpellName(spellID, sliderVolume) then return end
+
+  -- Fallback: pre-recorded "proc ready" voice clip.
   local style = self:GetResourceVoiceStyle()
   self.procReadyVoiceVariantIndex = (self.procReadyVoiceVariantIndex == 1) and 2 or 1
   local file = "proc_ready_" .. tostring(self.procReadyVoiceVariantIndex) .. ".ogg"
@@ -692,7 +735,7 @@ function SFA:UpdateProcReadyAlerts()
         if not state.announced and (now - (state.lastAlert or 0)) >= cooldown then
           state.announced = true
           state.lastAlert = now
-          self:PlayProcReadyVoice()
+          self:PlayProcReadyVoice(id)
         end
       else
         state.announced = false
