@@ -1507,11 +1507,19 @@ end
 function SFA:ApplyClickBindings(frame, group)
   if not frame then return end
 
+  local unit = frame.unit
+
+  -- If the enemy single-target slot is currently showing a friendly unit,
+  -- cast whatever is configured for the friendly frame instead of enemy.
+  local clickGroup = group
+  if group == "enemy" and self:IsFriendlyOverrideTarget(unit) then
+    clickGroup = "friendly"
+  end
+
   -- Use per-character, per-spec click macros
-  local clicks = self:GetSpecClickTable(group)
+  local clicks = self:GetSpecClickTable(clickGroup)
   if type(clicks) ~= "table" then return end
 
-  local unit = frame.unit
   frame:SetAttribute("unit", unit)
 
   local allowedButtons = {
@@ -1837,13 +1845,50 @@ function SFA:GetDisplayedUnits(group)
         local ok, result = pcall(UnitCanAttack, "player", "target")
         canAttack = ok and result or false
       end
-      if canAttack then
+      local isFriend = false
+      if UnitIsFriend then
+        local ok, result = pcall(UnitIsFriend, "player", "target")
+        isFriend = ok and result or false
+      end
+      -- Show the single-target slot for either an attackable enemy or a
+      -- friendly unit. Which one it is gets resolved per-frame via
+      -- SFA:IsFriendlyOverrideTarget so appearance/clicks match the type.
+      if canAttack or isFriend then
         table.insert(units, "target")
       end
     end
   end
 
   return units
+end
+
+-- Returns true when the "enemy" single-target slot is currently occupied by
+-- a friendly unit (i.e. the player targeted a friendly while not in arena).
+-- Only the "target" unit token can ever be a friendly override; arena slots
+-- are always genuine enemies.
+function SFA:IsFriendlyOverrideTarget(unit)
+  if unit ~= "target" then return false end
+
+  local exists = false
+  if UnitExists then
+    local ok, result = pcall(UnitExists, unit)
+    exists = ok and result or false
+  end
+  if not exists then return false end
+
+  local canAttack = false
+  if UnitCanAttack then
+    local ok, result = pcall(UnitCanAttack, "player", unit)
+    canAttack = ok and result or false
+  end
+  if canAttack then return false end
+
+  local isFriend = false
+  if UnitIsFriend then
+    local ok, result = pcall(UnitIsFriend, "player", unit)
+    isFriend = ok and result or false
+  end
+  return isFriend
 end
 
 
@@ -1856,6 +1901,21 @@ local function GetTargetHighlightColor(mode)
     return 0.80, 0.30, 0.30, 0.70
   end
   return 0.90, 0.35, 0.35, 0.85
+end
+
+-- Green counterpart used when the enemy single-target slot is showing a
+-- friendly unit (see SFA:IsFriendlyOverrideTarget). Mirrors the same
+-- targetColor intensity setting so the user's existing preference still
+-- controls the strength of the highlight.
+local function GetFriendlyTargetHighlightColor(mode)
+  if mode == "none" then
+    return nil
+  elseif mode == "soft" then
+    return 0.40, 1, 0.40, 0.90
+  elseif mode == "subtle" then
+    return 0.30, 0.80, 0.30, 0.70
+  end
+  return 0.35, 0.90, 0.35, 0.85
 end
 
 function SFA:GetSpellNameSafe(spellID)
@@ -2037,7 +2097,13 @@ function SFA:UpdateTargetHighlight(frame, group)
 
   local shouldHighlight = UnitExists("target") and UnitIsUnit(frame.unit, "target")
   if shouldHighlight then
-    local r, g, b, a = GetTargetHighlightColor((self.db.enemy and self.db.enemy.targetColor) or "medium")
+    local mode = (self.db.enemy and self.db.enemy.targetColor) or "medium"
+    local r, g, b, a
+    if self:IsFriendlyOverrideTarget(frame.unit) then
+      r, g, b, a = GetFriendlyTargetHighlightColor(mode)
+    else
+      r, g, b, a = GetTargetHighlightColor(mode)
+    end
     if not r then
       frame.targetBorder:Hide()
       return
@@ -2060,6 +2126,10 @@ end
 
 function SFA:UpdateFrameDataOnly(frame, group)
   local unit = frame.unit
+  local displayGroup = group
+  if group == "enemy" and self:IsFriendlyOverrideTarget(unit) then
+    displayGroup = "friendly"
+  end
   local sim = frame.simulationData or self:GetSimulationData(unit)
 
   if sim then
@@ -2134,10 +2204,10 @@ function SFA:UpdateFrameDataOnly(frame, group)
   frame.name:SetText(name)
 
   local r, g, b = 0.1, 0.8, 0.2
-  if group == "enemy" and self.db.enemy.classColor and classFile and RAID_CLASS_COLORS[classFile] then
+  if displayGroup == "enemy" and self.db.enemy.classColor and classFile and RAID_CLASS_COLORS[classFile] then
     local c = RAID_CLASS_COLORS[classFile]
     r, g, b = c.r, c.g, c.b
-  elseif group == "friendly" then
+  elseif displayGroup == "friendly" then
     if self.db.friendly and self.db.friendly.classColor and classFile and RAID_CLASS_COLORS[classFile] then
       local c = RAID_CLASS_COLORS[classFile]
       r, g, b = c.r, c.g, c.b
@@ -2160,7 +2230,7 @@ function SFA:UpdateFrameDataOnly(frame, group)
   end
 
   local roleVisual = nil
-  if (group == "enemy" and self.db.enemy.healerMarker) or group == "friendly" then
+  if (displayGroup == "enemy" and self.db.enemy.healerMarker) or displayGroup == "friendly" then
     roleVisual = self:GetUnitRoleVisual(unit, frame)
   end
   frame.role:SetText("")
@@ -2180,7 +2250,7 @@ function SFA:UpdateFrameDataOnly(frame, group)
     frame.role:Hide()
   end
 
-  self:UpdateAuraIcons(frame, group)
+  self:UpdateAuraIcons(frame, displayGroup)
   self:UpdateTargetXMark(frame, group)
   self:UpdateTargetHighlight(frame, group)
   frame:SetAlpha(1)
@@ -2188,6 +2258,13 @@ end
 
 function SFA:UpdateFrameVisual(frame, group)
   local unit = frame.unit
+  -- When the enemy single-target slot is showing a friendly unit, treat it
+  -- like a friendly frame for coloring/role/aura purposes (border handling
+  -- stays separate, see UpdateTargetHighlight).
+  local displayGroup = group
+  if group == "enemy" and self:IsFriendlyOverrideTarget(unit) then
+    displayGroup = "friendly"
+  end
 
   local sim = frame.simulationData or self:GetSimulationData(unit)
   if sim then
@@ -2284,10 +2361,10 @@ function SFA:UpdateFrameVisual(frame, group)
   frame.name:SetText(name)
 
   local r, g, b = 0.1, 0.8, 0.2
-  if group == "enemy" and self.db.enemy.classColor and classFile and RAID_CLASS_COLORS[classFile] then
+  if displayGroup == "enemy" and self.db.enemy.classColor and classFile and RAID_CLASS_COLORS[classFile] then
     local c = RAID_CLASS_COLORS[classFile]
     r, g, b = c.r, c.g, c.b
-  elseif group == "friendly" then
+  elseif displayGroup == "friendly" then
     if self.db.friendly and self.db.friendly.classColor and classFile and RAID_CLASS_COLORS[classFile] then
       local c = RAID_CLASS_COLORS[classFile]
       r, g, b = c.r, c.g, c.b
@@ -2310,7 +2387,7 @@ function SFA:UpdateFrameVisual(frame, group)
   end
 
   local roleVisual = nil
-  if (group == "enemy" and self.db.enemy.healerMarker) or group == "friendly" then
+  if (displayGroup == "enemy" and self.db.enemy.healerMarker) or displayGroup == "friendly" then
     roleVisual = self:GetUnitRoleVisual(unit, frame)
   end
   frame.role:SetText("")
@@ -2330,7 +2407,7 @@ function SFA:UpdateFrameVisual(frame, group)
     frame.role:Hide()
   end
 
-  self:UpdateAuraIcons(frame, group)
+  self:UpdateAuraIcons(frame, displayGroup)
   self:UpdateTargetXMark(frame, group)
   self:UpdateTargetHighlight(frame, group)
 end
