@@ -10,6 +10,7 @@ SFA.defaults = {
   },
   buffBlacklist = {},
   spellNameCache = {},
+  macroIconExplicit = {},
   hideHeaders = false,
   minimap = {
     enabled = true,

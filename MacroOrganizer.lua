@@ -1227,6 +1227,7 @@ function SFA:CMF_SelectMacro(idx)
   CMF.selected=idx; CMF.dirty=false; CMF.pendingIcon=nil
   local name,icon,body = GetMacroInfo(idx)
   if not name then return end
+  CMF.selectedOrigName = name
   if CMF.nameBox   then CMF.nameBox:SetText(name); CMF.nameBox:SetCursorPosition(0) end
   if CMF.bodyEdit  then CMF.bodyEdit:SetText(body or ""); CMF.bodyEdit:SetCursorPosition(0) end
   if CMF.selIconTex then CMF.selIconTex:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark") end
@@ -1242,16 +1243,65 @@ function SFA:CMF_UpdateActionButtons()
   if CMF.delBtn    then CMF.delBtn:SetEnabled(has) end
 end
 
+-- Blizzard's "?" icon is a sentinel: as long as a macro's icon is left on it,
+-- the action button auto-picks/updates its icon from whichever spell in the
+-- macro (e.g. a /castsequence) is currently relevant. The moment you save an
+-- explicit icon -- even one that visually happens to match the guessed spell
+-- icon -- that auto behavior is lost and the icon becomes fixed. GetMacroInfo
+-- has no way to tell us "this macro is still on auto", since it reports the
+-- resolved/guessed icon once one exists, so we have to track "did the user
+-- ever deliberately pick a real icon for this macro" ourselves.
+local function SFA_IsQuestionMarkIcon(icon)
+  if not icon then return true end
+  local s = tostring(icon):lower()
+  return s:find("questionmark", 1, true) ~= nil
+end
+
+local function SFA_MacroIconKey(name)
+  return (CMF.filter or "global") .. ":" .. (name or "")
+end
+
 function SFA:CMF_SaveMacro()
   if not CMF.selected then return end
   if InCombatLockdown() then SFA.Print("Cannot save macros in combat.") return end
   local name = CMF.nameBox and CMF.nameBox:GetText() or ""
   local body = CMF.bodyEdit and CMF.bodyEdit:GetText() or ""
-  local icon = CMF.pendingIcon or select(2,GetMacroInfo(CMF.selected)) or "INV_Misc_QuestionMark"
   if name=="" then name="Macro" end
+
+  local explicitTbl = SFA.db and SFA.db.macroIconExplicit
+  local key = SFA_MacroIconKey(name)
+  if explicitTbl and CMF.selectedOrigName and CMF.selectedOrigName ~= name then
+    -- Renaming: carry the explicit-icon flag over to the new name's key.
+    local oldKey = SFA_MacroIconKey(CMF.selectedOrigName)
+    if explicitTbl[oldKey] ~= nil then
+      explicitTbl[key] = explicitTbl[oldKey]
+      explicitTbl[oldKey] = nil
+    end
+  end
+  local icon
+
+  if CMF.pendingIcon then
+    -- User actively touched the icon picker this session.
+    if SFA_IsQuestionMarkIcon(CMF.pendingIcon) then
+      icon = "INV_Misc_QuestionMark"
+      if explicitTbl then explicitTbl[key] = nil end
+    else
+      icon = CMF.pendingIcon
+      if explicitTbl then explicitTbl[key] = true end
+    end
+  elseif explicitTbl and explicitTbl[key] then
+    -- User previously chose a real icon for this macro on purpose; keep it
+    -- even though we're only editing name/body right now.
+    icon = select(2,GetMacroInfo(CMF.selected)) or "INV_Misc_QuestionMark"
+  else
+    -- Icon was never explicitly chosen -- stay on "?" so the button keeps
+    -- following the cast sequence instead of freezing on the first spell.
+    icon = "INV_Misc_QuestionMark"
+  end
+
   local ok,err = pcall(EditMacro,CMF.selected,name,icon,body)
   if ok then
-    CMF.dirty=false; CMF.pendingIcon=nil
+    CMF.dirty=false; CMF.pendingIcon=nil; CMF.selectedOrigName=name
     self:CMF_BuildCache(); self:CMF_RefreshGrid()
     SFA.Print("Macro '"..name.."' saved.")
   else SFA.Print("Save error: "..(err or "")) end
@@ -1269,7 +1319,10 @@ function SFA:CMF_DeleteMacro()
   local ok,err = pcall(DeleteMacro,CMF.selected)
   if ok then
     SFA.Print("Macro '"..name.."' deleted.")
-    CMF.selected=nil; CMF.dirty=false
+    if SFA.db and SFA.db.macroIconExplicit then
+      SFA.db.macroIconExplicit[SFA_MacroIconKey(name)] = nil
+    end
+    CMF.selected=nil; CMF.dirty=false; CMF.selectedOrigName=nil
     if CMF.nameBox   then CMF.nameBox:SetText("") end
     if CMF.bodyEdit  then CMF.bodyEdit:SetText("") end
     if CMF.charCount then CMF.charCount:SetText("0 / 255") end
