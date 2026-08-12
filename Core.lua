@@ -2059,8 +2059,8 @@ function SFA:UpdateAuraIcons(frame, group)
     end
 
     for i = 1, 16 do
-      local aura = C_UnitAuras.GetAuraDataByIndex(frame.unit, i, helpfulFilter)
-      if not aura then break end
+      local ok, aura = pcall(C_UnitAuras.GetAuraDataByIndex, frame.unit, i, helpfulFilter)
+      if not ok or not aura then break end
       local spellID = aura.spellId or aura.spellID
       local texture = aura.icon or aura.iconFileID
       if texture and self:IsFriendlyAuraAllowed(aura, group) and not self:IsBlacklistedBuff(spellID) then
@@ -2071,8 +2071,8 @@ function SFA:UpdateAuraIcons(frame, group)
 
   if cfg.showDebuffs then
     for i = 1, 16 do
-      local aura = C_UnitAuras.GetAuraDataByIndex(frame.unit, i, "HARMFUL")
-      if not aura then break end
+      local ok, aura = pcall(C_UnitAuras.GetAuraDataByIndex, frame.unit, i, "HARMFUL")
+      if not ok or not aura then break end
       local spellID = aura.spellId or aura.spellID
       local texture = aura.icon or aura.iconFileID
       if texture and not self:IsBlacklistedBuff(spellID) then
