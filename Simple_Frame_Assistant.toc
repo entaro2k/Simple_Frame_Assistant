@@ -1,9 +1,9 @@
 ## IconTexture: Interface\AddOns\Simple_Frame_Assistant\Icon
-## Interface: 120007
+## Interface: 120100
 ## Title: Simple Frame Assistant
 ## Notes: Simple Midnight-only friendly/enemy frame assistant.
 ## Author: En Taro
-## Version: 0.24.02
+## Version: 0.24.03
 ## SavedVariables: SFA_DB
 ## SavedVariablesPerCharacter: SFA_DB_Char
 
