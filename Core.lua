@@ -20,11 +20,33 @@ local IsInRaid = IsInRaid
 local InCombatLockdown = InCombatLockdown
 local GetArenaOpponentSpec = GetArenaOpponentSpec
 local RAID_CLASS_COLORS = RAID_CLASS_COLORS
+local issecretvalue = issecretvalue
 local C_Timer = C_Timer
 local C_UnitAuras = C_UnitAuras
 local C_NamePlate = C_NamePlate
 local C_QuestLog = C_QuestLog
 local IsShiftKeyDown = IsShiftKeyDown
+
+-- Returns the RAID_CLASS_COLORS entry for classFile, or nil if classFile is
+-- missing or a "secret" value (Blizzard shields unit data such as class,
+-- name and health in restricted content like Delves/follower dungeons; a
+-- secret value can't be used to index a table, so we must not even try).
+local function SFA_SafeClassColor(classFile)
+  if not classFile then return nil end
+  if issecretvalue and issecretvalue(classFile) then return nil end
+  return RAID_CLASS_COLORS[classFile]
+end
+
+-- Returns value unchanged, or nil if it is a "secret" value. Secret values
+-- can't be compared, concatenated, or used as table keys (any of those
+-- throws "attempt to compare/concatenate/index ... a secret value"), so
+-- anything derived from unit APIs in restricted content (Delves/follower
+-- dungeons, arenas, etc.) must be passed through this before use.
+local function SFA_SafeValue(value)
+  if value == nil then return nil end
+  if issecretvalue and issecretvalue(value) then return nil end
+  return value
+end
 
 local function GetAddonVersion()
   if C_AddOns and C_AddOns.GetAddOnMetadata then
@@ -1410,7 +1432,8 @@ function SFA:IsHealerUnit(unit, frame)
 
   if UnitGroupRolesAssigned then
     local ok, role = pcall(UnitGroupRolesAssigned, unit)
-    if ok and role == "HEALER" then
+    role = ok and SFA_SafeValue(role) or nil
+    if role == "HEALER" then
       return true, nil
     end
   end
@@ -2204,13 +2227,13 @@ function SFA:UpdateFrameDataOnly(frame, group)
   frame.name:SetText(name)
 
   local r, g, b = 0.1, 0.8, 0.2
-  if displayGroup == "enemy" and self.db.enemy.classColor and classFile and RAID_CLASS_COLORS[classFile] then
-    local c = RAID_CLASS_COLORS[classFile]
-    r, g, b = c.r, c.g, c.b
+  local enemyClassColor = displayGroup == "enemy" and self.db.enemy.classColor and SFA_SafeClassColor(classFile)
+  if enemyClassColor then
+    r, g, b = enemyClassColor.r, enemyClassColor.g, enemyClassColor.b
   elseif displayGroup == "friendly" then
-    if self.db.friendly and self.db.friendly.classColor and classFile and RAID_CLASS_COLORS[classFile] then
-      local c = RAID_CLASS_COLORS[classFile]
-      r, g, b = c.r, c.g, c.b
+    local friendlyClassColor = self.db.friendly and self.db.friendly.classColor and SFA_SafeClassColor(classFile)
+    if friendlyClassColor then
+      r, g, b = friendlyClassColor.r, friendlyClassColor.g, friendlyClassColor.b
     else
       r, g, b = 0.1, 0.75, 0.25
     end
@@ -2361,13 +2384,13 @@ function SFA:UpdateFrameVisual(frame, group)
   frame.name:SetText(name)
 
   local r, g, b = 0.1, 0.8, 0.2
-  if displayGroup == "enemy" and self.db.enemy.classColor and classFile and RAID_CLASS_COLORS[classFile] then
-    local c = RAID_CLASS_COLORS[classFile]
-    r, g, b = c.r, c.g, c.b
+  local enemyClassColor = displayGroup == "enemy" and self.db.enemy.classColor and SFA_SafeClassColor(classFile)
+  if enemyClassColor then
+    r, g, b = enemyClassColor.r, enemyClassColor.g, enemyClassColor.b
   elseif displayGroup == "friendly" then
-    if self.db.friendly and self.db.friendly.classColor and classFile and RAID_CLASS_COLORS[classFile] then
-      local c = RAID_CLASS_COLORS[classFile]
-      r, g, b = c.r, c.g, c.b
+    local friendlyClassColor = self.db.friendly and self.db.friendly.classColor and SFA_SafeClassColor(classFile)
+    if friendlyClassColor then
+      r, g, b = friendlyClassColor.r, friendlyClassColor.g, friendlyClassColor.b
     else
       r, g, b = 0.1, 0.75, 0.25
     end
@@ -3352,7 +3375,8 @@ function SFA:GetUnitRoleVisual(unit, frame)
 
   if UnitGroupRolesAssigned then
     local ok, role = pcall(UnitGroupRolesAssigned, unit)
-    if ok and (role == "HEALER" or role == "TANK") then
+    role = ok and SFA_SafeValue(role) or nil
+    if role == "HEALER" or role == "TANK" then
       return role
     end
   end
