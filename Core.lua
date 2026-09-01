@@ -3,50 +3,16 @@ SFA = _G[addonName] or SFA
 
 local CreateFrame = CreateFrame
 local UnitExists = UnitExists
-local UnitHealth = UnitHealth
-local UnitHealthMax = UnitHealthMax
-local UnitName = UnitName
 local UnitClass = UnitClass
-local UnitIsConnected = UnitIsConnected
-local UnitIsDeadOrGhost = UnitIsDeadOrGhost
 local UnitAffectingCombat = UnitAffectingCombat
-local UnitCanAssist = UnitCanAssist
 local UnitCanAttack = UnitCanAttack
 local UnitIsEnemy = UnitIsEnemy
 local UnitIsUnit = UnitIsUnit
-local IsActiveBattlefieldArena = IsActiveBattlefieldArena
-local IsInGroup = IsInGroup
-local IsInRaid = IsInRaid
 local InCombatLockdown = InCombatLockdown
-local GetArenaOpponentSpec = GetArenaOpponentSpec
-local RAID_CLASS_COLORS = RAID_CLASS_COLORS
 local issecretvalue = issecretvalue
 local C_Timer = C_Timer
-local C_UnitAuras = C_UnitAuras
 local C_NamePlate = C_NamePlate
 local C_QuestLog = C_QuestLog
-local IsShiftKeyDown = IsShiftKeyDown
-
--- Returns the RAID_CLASS_COLORS entry for classFile, or nil if classFile is
--- missing or a "secret" value (Blizzard shields unit data such as class,
--- name and health in restricted content like Delves/follower dungeons; a
--- secret value can't be used to index a table, so we must not even try).
-local function SFA_SafeClassColor(classFile)
-  if not classFile then return nil end
-  if issecretvalue and issecretvalue(classFile) then return nil end
-  return RAID_CLASS_COLORS[classFile]
-end
-
--- Returns value unchanged, or nil if it is a "secret" value. Secret values
--- can't be compared, concatenated, or used as table keys (any of those
--- throws "attempt to compare/concatenate/index ... a secret value"), so
--- anything derived from unit APIs in restricted content (Delves/follower
--- dungeons, arenas, etc.) must be passed through this before use.
-local function SFA_SafeValue(value)
-  if value == nil then return nil end
-  if issecretvalue and issecretvalue(value) then return nil end
-  return value
-end
 
 local function GetAddonVersion()
   if C_AddOns and C_AddOns.GetAddOnMetadata then
@@ -58,213 +24,66 @@ local function GetAddonVersion()
   return "Unknown"
 end
 
-SFA.frames = { friendly = {}, enemy = {} }
--- Vertical space reserved under a frame so its debuff row (icons
--- anchored to BOTTOMRIGHT) stays visible and does not overlap the frame below.
-SFA.DEBUFF_ROW_HEIGHT = 10
-SFA.headers = {}
-SFA.pendingRefresh = false
-SFA.pendingLayout = false
-SFA.pendingVisibility = false
-SFA.healerSpecs = {
-  [105] = true,
-  [256] = true,
-  [257] = true,
-  [264] = true,
-  [270] = true,
-  [65] = true,
-  [1468] = true,
-}
+SFA.auraDebug = false -- toggled by /sfaauradebug or the Debug options tab; synced with self.db.auraDebugEnabled at login so it survives /reload
 
-SFA.tankSpecs = {
-  [250] = true,
-  [581] = true,
-  [104] = true,
-  [268] = true,
-  [66] = true,
-  [73] = true,
-}
-
-
-local function SpellTextureSafe(spellID, fallback)
-  if C_Spell and C_Spell.GetSpellTexture then
-    local ok, tex = pcall(C_Spell.GetSpellTexture, spellID)
-    if ok and tex then return tex end
-  end
-  if GetSpellTexture then
-    local ok, tex = pcall(GetSpellTexture, spellID)
-    if ok and tex then return tex end
-  end
-  return fallback or "Interface\\Icons\\INV_Misc_QuestionMark"
-end
-
-
-SFA.simulationClassPools = {
-  healers = { "DRUID", "PRIEST", "SHAMAN", "MONK", "PALADIN", "EVOKER" },
-  dpsTanks = { "ROGUE", "MAGE", "WARLOCK", "WARRIOR", "DEMONHUNTER", "HUNTER", "DEATHKNIGHT", "MONK", "DRUID", "PALADIN", "EVOKER", "WARRIOR" },
-}
-
-SFA.simulationSpellSamples = {
-  buffs = {
-    DRUID = {774, 33763}, PRIEST = {139, 17}, SHAMAN = {61295, 974}, MONK = {119611, 124682}, PALADIN = {53563, 1022}, EVOKER = {355941, 364343},
-    WARRIOR = {6673}, MAGE = {1459}, WARLOCK = {5697}, ROGUE = {315496}, HUNTER = {186265}, DEATHKNIGHT = {195181}, DEMONHUNTER = {203981},
-  },
-  debuffs = {
-    DRUID = {1079, 155722}, PRIEST = {589, 15487}, SHAMAN = {188389, 196840}, MONK = {123725, 116095}, PALADIN = {853, 62124}, EVOKER = {357209, 370898},
-    WARRIOR = {1715, 385060}, MAGE = {12654, 122}, WARLOCK = {980, 30108}, ROGUE = {703, 1943}, HUNTER = {120679, 162487}, DEATHKNIGHT = {55095, 191587}, DEMONHUNTER = {179057, 198813},
-  },
-}
-
-local function SFA_SimPick(list, index, salt)
-  if not list or #list == 0 then return nil end
-  local i = ((index - 1 + (salt or 0)) % #list) + 1
-  return list[i]
-end
-
-local function SFA_SimBuildEntry(name, classFile, health, healer, target, tank)
-  local buffs = (SFA.simulationSpellSamples.buffs[classFile] or {})
-  local debuffs = (SFA.simulationSpellSamples.debuffs[classFile] or {})
-  local out = {
-    name = name,
-    class = classFile,
-    health = health or 0.8,
-    healer = healer and true or false,
-    tank = tank and true or false,
-    target = target and true or false,
-    buffSpellIDs = {},
-    debuffSpellIDs = {},
-    value = "",
-  }
-  for i=1, math.min(2, #buffs) do out.buffSpellIDs[i] = buffs[i] end
-  for i=1, math.min(2, #debuffs) do out.debuffSpellIDs[i] = debuffs[i] end
-  return out
-end
-
-function SFA:BuildSimulationProfile(scenario)
-  scenario = scenario or "arena3v3"
-  local profile = { friendly = {}, enemy = {} }
-
-  if scenario == "arena3v3" then
-    local fh = SFA_SimPick(self.simulationClassPools.healers, 1, math.random(0, 5)) or "PRIEST"
-    local eh = SFA_SimPick(self.simulationClassPools.healers, 3, math.random(0, 5)) or "MONK"
-    local ed2 = SFA_SimPick(self.simulationClassPools.dpsTanks, 5, math.random(0, 11)) or "WARRIOR"
-    profile.friendly = {
-      SFA_SimBuildEntry("You", "DRUID", 0.82, false, false),
-      SFA_SimBuildEntry("Friendly Healer", fh, 0.64, true, false),
-      SFA_SimBuildEntry("Friendly Tank", "WARRIOR", 0.77, false, false, true),
-    }
-    profile.enemy = {
-      SFA_SimBuildEntry("Enemy Healer", eh, 0.71, true, false),
-      SFA_SimBuildEntry("Enemy Tank", "WARRIOR", 0.59, false, true, true),
-      SFA_SimBuildEntry("Enemy DPS", ed2, 0.88, false, false),
-    }
-  elseif scenario == "dungeon" then
-    local healer = SFA_SimPick(self.simulationClassPools.healers, 2, math.random(0, 5)) or "SHAMAN"
-    local tank = "WARRIOR"
-    local d1 = SFA_SimPick(self.simulationClassPools.dpsTanks, 1, math.random(0, 11)) or "MAGE"
-    local d2 = SFA_SimPick(self.simulationClassPools.dpsTanks, 3, math.random(0, 11)) or "ROGUE"
-    local d3 = SFA_SimPick(self.simulationClassPools.dpsTanks, 5, math.random(0, 11)) or "WARLOCK"
-    profile.friendly = {
-      SFA_SimBuildEntry("You", "DRUID", 0.91, false, false),
-      SFA_SimBuildEntry("Tank", tank, 0.48, false, false, true),
-      SFA_SimBuildEntry("Healer", healer, 0.79, true, false),
-      SFA_SimBuildEntry("DPS 1", d1, 0.95, false, false),
-      SFA_SimBuildEntry("DPS 2", d2, 0.67, false, false),
-    }
-    profile.enemy = {
-      SFA_SimBuildEntry("Dungeon Enemy", d3, 0.61, false, true)
-    }
-  elseif scenario == "raid10" or scenario == "raid25" then
-    local total = scenario == "raid25" and 25 or 10
-    for i = 1, total do
-      local classFile
-      local healer = false
-      local tank = false
-
-      if i == 1 then
-        classFile = "DRUID"
-      elseif (i % 5) == 2 then
-        classFile = SFA_SimPick(self.simulationClassPools.healers, i, i) or "PRIEST"
-        healer = true
-      elseif (i % 5) == 3 then
-        classFile = "WARRIOR"
-        tank = true
-      else
-        classFile = SFA_SimPick(self.simulationClassPools.dpsTanks, i, i) or "MAGE"
-      end
-
-      local hp = 0.55 + ((i % 5) * 0.08)
-      local name = i == 1 and "You" or ("Raid " .. i)
-      profile.friendly[#profile.friendly + 1] = SFA_SimBuildEntry(name, classFile, hp, healer, false, tank)
-    end
-
-    profile.enemy = {
-      SFA_SimBuildEntry("Raid Target", "WARRIOR", 0.62, false, true, true),
-    }
-  else
-    local enemy = SFA_SimPick(self.simulationClassPools.dpsTanks, 6, math.random(0, 11)) or "ROGUE"
-    profile.friendly = {
-      SFA_SimBuildEntry("You", "DRUID", 0.93, false, false)
-    }
-    profile.enemy = {
-      SFA_SimBuildEntry("World Target", enemy, 0.44, false, true)
-    }
-  end
-
-  return profile
-end
-
-function SFA:IsSimulationEnabled()
-  return self.session and self.session.simulationEnabled == true
-end
-
-function SFA:GetSimulationScenario()
-  return (self.db and self.db.simulation and self.db.simulation.scenario) or "arena3v3"
-end
-
-function SFA:GetSimulationProfile()
-  if not self.session then self.session = {} end
-  if not self.session.simulationProfile then
-    self.session.simulationProfile = self:BuildSimulationProfile(self:GetSimulationScenario())
-  end
-  return self.session.simulationProfile
-end
-
-function SFA:SetSimulationEnabled(enabled)
-  self.session = self.session or {}
-  self.session.simulationEnabled = enabled and true or false
-  if self.db and self.db.simulation then
-    self.db.simulation.enabled = false
-  end
-  if enabled then
-    self.session.simulationProfile = self:BuildSimulationProfile(self:GetSimulationScenario())
-  else
-    self.session.simulationProfile = nil
-  end
-  if not InCombatLockdown() then
-    self:RefreshGroup("friendly")
-    self:RefreshGroup("enemy")
-    if self.RefreshOptionsPanel then self:RefreshOptionsPanel() end
-  else
-    self:QueueRefresh(0.05)
+-- Sets aura-debug chat printing on/off and persists the choice to
+-- self.db.auraDebugEnabled (a plain SavedVariable field) so it survives
+-- /reload -- previously this was only a runtime table field that silently
+-- reset to off on every reload.
+function SFA:SetAuraDebug(enabled)
+  self.auraDebug = enabled and true or false
+  if self.db then
+    self.db.auraDebugEnabled = self.auraDebug
   end
 end
 
-
-function SFA:IsSimulationUnit(unit)
-  return type(unit) == "string" and unit:match("^sfa_sim_")
+-- ---------------------------------------------------------------------
+-- Persisted diagnostic log. taint.log (Blizzard's own taint tracer) turned
+-- out to not cover the "secret value" access-block introduced by Midnight's
+-- Secret Values system at all -- it only sees classic taint (global var
+-- reads/writes, blocked protected-function calls), not this newer,
+-- separate restriction. So instead we log our own trace directly into a
+-- SavedVariable: it survives to disk on /reload or logout (same as any
+-- other addon SavedVariable, under the account's SavedVariables folder),
+-- with no dependency on Blizzard debug cvars at all. /sfaclearlog resets it
+-- before a repro run so the log stays small and easy to read.
+-- ---------------------------------------------------------------------
+SFA_DebugLog = SFA_DebugLog or {}
+local SFA_LOG_MAX = 1000
+function SFA:Log(fmt, ...)
+  -- Gated on the Enable checkbox (self.auraDebug): previously this wrote
+  -- unconditionally regardless of the toggle, so the log kept filling up
+  -- even with debug disabled. Now nothing is appended while disabled.
+  if not self.auraDebug then return end
+  local okFmt, msg = pcall(string.format, fmt, ...)
+  if not okFmt then msg = tostring(fmt) end
+  local t = (GetTime and GetTime()) or 0
+  SFA_DebugLog[#SFA_DebugLog + 1] = string.format("[%.2f] %s", t, msg)
+  if #SFA_DebugLog > SFA_LOG_MAX then
+    table.remove(SFA_DebugLog, 1)
+  end
 end
 
-function SFA:GetSimulationData(unit)
-  if not self:IsSimulationUnit(unit) then return nil end
-  local group, index = unit:match("^sfa_sim_(friendly|enemy)_(%d+)$")
-  index = tonumber(index)
-  if not group or not index then return nil end
-  local profile = self:GetSimulationProfile()
-  return profile and profile[group] and profile[group][index] or nil
+-- Like SFA:Log, but bypasses the Enable-debug checkbox entirely -- reserved
+-- for diagnostics that fire from live gameplay (e.g. a click on the native
+-- arena frame), where relying on the user to remember to enable debug first
+-- has repeatedly wasted whole test rounds (see project notes, 0.24.28/29).
+-- Capped at SFA_FORCE_LOG_MAX total entries for the addon's lifetime this
+-- session, so an unexpectedly chatty event can't quietly fill/roll the
+-- entire 400-entry ring buffer on its own.
+local SFA_ForceLogCount = 0
+local SFA_FORCE_LOG_MAX = 40
+function SFA:LogForce(fmt, ...)
+  if SFA_ForceLogCount >= SFA_FORCE_LOG_MAX then return end
+  SFA_ForceLogCount = SFA_ForceLogCount + 1
+  local okFmt, msg = pcall(string.format, fmt, ...)
+  if not okFmt then msg = tostring(fmt) end
+  local t = (GetTime and GetTime()) or 0
+  SFA_DebugLog[#SFA_DebugLog + 1] = string.format("[%.2f] %s", t, msg)
+  if #SFA_DebugLog > SFA_LOG_MAX then
+    table.remove(SFA_DebugLog, 1)
+  end
 end
-
-
 local function Print(msg)
   DEFAULT_CHAT_FRAME:AddMessage("|cff7cc6ffSFA:|r " .. tostring(msg))
 end
@@ -997,255 +816,6 @@ end
 
 
 
-function SFA:GetFriendlyScenarioKeyForMode(mode)
-  mode = mode or "world"
-  if mode == "arena3v3" then
-    return "arena"
-  elseif mode == "raid10" then
-    return "raid10"
-  elseif mode == "raid25" then
-    return "raid25"
-  elseif mode == "dungeon" then
-    return "dungeon"
-  else
-    return "world"
-  end
-end
-
-
-function SFA:GetFriendlyContextKeyForSimulationScenario()
-  return self:GetFriendlyScenarioKeyForMode(self:GetSimulationScenario())
-end
-
-function SFA:GetFriendlyScenarioPoint(mode)
-  local cfg = self.db and self.db.friendly
-  if not cfg then return nil end
-  cfg.scenarioPoints = cfg.scenarioPoints or {}
-  local key = self:GetFriendlyScenarioKeyForMode(mode)
-  if type(cfg.scenarioPoints[key]) ~= "table" then
-    local base = cfg.point or { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 }
-    cfg.scenarioPoints[key] = {
-      anchor = base.anchor or "CENTER",
-      relativeTo = "UIParent",
-      relativePoint = base.relativePoint or "CENTER",
-      x = base.x or 0,
-      y = base.y or 0,
-    }
-  end
-  return cfg.scenarioPoints[key], key
-end
-
-function SFA:SetFriendlyScenarioPoint(mode, x, y, anchor, relativePoint)
-  local point, key = self:GetFriendlyScenarioPoint(mode)
-  if not point then return false end
-  point.anchor = anchor or point.anchor or "CENTER"
-  point.relativeTo = "UIParent"
-  point.relativePoint = relativePoint or point.relativePoint or "CENTER"
-  point.x = tonumber(x) or 0
-  point.y = tonumber(y) or 0
-  return true
-end
-
--- NOTE: duplicate definition removed (was overwriting the correct version above with wrong "smallGroup" logic)
-
-
-function SFA:SaveCurrentFriendlyPositionForSimulation()
-  local header = self.headers and self.headers.friendly
-  if not header then return false end
-
-  local p, _, rp, x, y = header:GetPoint(1)
-  if not p then return false end
-
-  local key = self:GetFriendlyScenarioKeyForMode(self:GetSimulationScenario())
-  local point = {
-    anchor = p,
-    relativeTo = "UIParent",
-    relativePoint = rp,
-    x = math.floor(x + 0.5),
-    y = math.floor(y + 0.5),
-  }
-
-  self:SetLastContextPoint("friendly", key, point)
-
-  self.db.friendly.point = self.db.friendly.point or {}
-  self.db.friendly.point.anchor = point.anchor
-  self.db.friendly.point.relativeTo = point.relativeTo
-  self.db.friendly.point.relativePoint = point.relativePoint
-  self.db.friendly.point.x = point.x
-  self.db.friendly.point.y = point.y
-
-  if not InCombatLockdown() then
-    self:ApplyLayout("friendly")
-    self:RefreshGroup("friendly")
-    self:RefreshOptionsPanel()
-  else
-    self.pendingLayout = true
-  end
-  return true
-end
-
-function SFA:GetFriendlyCountBasedContextKey()
-  local count = 1
-
-  if self.GetSimulationEnabled and self:GetSimulationEnabled() then
-    local profile = self:GetSimulationProfile() or {}
-    count = #(profile.friendly or {})
-  else
-    local units = self:GetDisplayedUnits("friendly") or {}
-    count = #units
-  end
-
-  if count >= 25 then
-    return "raid25"
-  elseif count >= 10 then
-    return "raid10"
-  else
-    return "smallGroup"
-  end
-end
-
-
-function SFA:GetCurrentLayoutContextKey(group)
-  if group == "enemy" then
-    return "default"
-  end
-
-  if group == "friendly" and self.IsSimulationEnabled and self:IsSimulationEnabled() then
-    return self:GetFriendlyScenarioKeyForMode(self:GetSimulationScenario())
-  end
-
-  local raidUnits = self.GetFriendlyRaidUnits and self:GetFriendlyRaidUnits() or {}
-  local count = #raidUnits
-  if count >= 25 then
-    return "raid25"
-  elseif count >= 10 then
-    return "raid10"
-  end
-
-  if self.IsInArenaContext and self:IsInArenaContext() then
-    return "arena"
-  end
-
-  local inGroup = false
-  if IsInGroup then
-    local ok, result = pcall(IsInGroup)
-    inGroup = ok and result or false
-  end
-
-  if inGroup then
-    local partyCount = 1
-    if GetNumSubgroupMembers then
-      local ok, result = pcall(GetNumSubgroupMembers)
-      if ok and type(result) == "number" then
-        partyCount = math.max(1, result + 1)
-      end
-    end
-    if partyCount > 1 then
-      return "dungeon"
-    end
-  end
-
-  return "world"
-end
-
-function SFA:EnsureScenarioPoints(group)
-  local cfg = self.db and self.db[group]
-  if not cfg then return nil end
-  cfg.scenarioPoints = cfg.scenarioPoints or {}
-  local base = cfg.point or { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = 0, y = 0 }
-
-  local function clonePoint(src)
-    return {
-      anchor = src.anchor or "CENTER",
-      relativeTo = "UIParent",
-      relativePoint = src.relativePoint or "CENTER",
-      x = src.x or 0,
-      y = src.y or 0,
-    }
-  end
-
-  if group == "friendly" then
-    if type(cfg.scenarioPoints.smallGroup) ~= "table" then cfg.scenarioPoints.smallGroup = clonePoint(base) end
-    if type(cfg.scenarioPoints.world)      ~= "table" then cfg.scenarioPoints.world      = clonePoint(base) end
-    if type(cfg.scenarioPoints.arena)      ~= "table" then cfg.scenarioPoints.arena      = clonePoint(base) end
-    if type(cfg.scenarioPoints.dungeon)    ~= "table" then cfg.scenarioPoints.dungeon    = clonePoint(base) end
-    if type(cfg.scenarioPoints.raid10)     ~= "table" then cfg.scenarioPoints.raid10     = clonePoint(base) end
-    if type(cfg.scenarioPoints.raid25)     ~= "table" then cfg.scenarioPoints.raid25     = clonePoint(base) end
-  else
-    if type(cfg.scenarioPoints.default) ~= "table" then cfg.scenarioPoints.default = clonePoint(base) end
-  end
-
-  return cfg.scenarioPoints
-end
-
-
-function SFA:GetActivePointData(group)
-  local cfg = self.db and self.db[group]
-  if not cfg then return nil end
-  cfg.scenarioPoints = cfg.scenarioPoints or {}
-
-  local key = self:GetCurrentLayoutContextKey(group)
-
-  if group == "friendly" then
-    local point = cfg.scenarioPoints[key]
-    if type(point) ~= "table" then
-      local base = cfg.point or { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 }
-      point = {
-        anchor = base.anchor or "CENTER",
-        relativeTo = "UIParent",
-        relativePoint = base.relativePoint or "CENTER",
-        x = base.x or 0,
-        y = base.y or 0,
-      }
-      cfg.scenarioPoints[key] = point
-    end
-    return point
-  else
-    if type(cfg.scenarioPoints.default) ~= "table" then
-      cfg.scenarioPoints.default = cfg.point or { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = 260, y = -40 }
-    end
-    return cfg.scenarioPoints.default
-  end
-end
-
-
-
-
-function SFA:SetLastContextPoint(group, key, point)
-  local cfg = self.db and self.db[group]
-  if not cfg then return end
-  cfg.scenarioPoints = cfg.scenarioPoints or {}
-
-  local saved = {
-    anchor = point.anchor,
-    relativeTo = "UIParent",
-    relativePoint = point.relativePoint,
-    x = point.x,
-    y = point.y,
-  }
-
-  if group == "friendly" then
-    -- key is already a mapped scenarioPoints key (e.g. "arena","raid10","world")
-    -- Do NOT call GetFriendlyScenarioKeyForMode again — it would double-map "arena" -> "world"
-    cfg.scenarioPoints[key] = saved
-  else
-    cfg.scenarioPoints.default = saved
-  end
-end
-
-local function SafePoint(frame, pointData)
-  frame:ClearAllPoints()
-  frame:SetPoint(pointData.anchor, UIParent, pointData.relativePoint, pointData.x, pointData.y)
-end
-
-
-function SFA:EnsureEnemySpecNameplateIcon(frame)
-  return nil
-end
-
-
-
-
 function SFA:EnsureEnemyTargetXNameplate(frame)
   if not frame then return nil end
 
@@ -1359,101 +929,6 @@ function SFA:RefreshEnemyNameplateOverlays()
   end
 end
 
-local function SetBackdropBasic(frame)
-  if not frame.SetBackdrop then return end
-  frame:SetBackdrop({
-    bgFile = "Interface/Tooltips/UI-Tooltip-Background",
-    edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
-    tile = true,
-    tileSize = 8,
-    edgeSize = 8,
-    insets = { left = 2, right = 2, top = 2, bottom = 2 },
-  })
-  frame:SetBackdropColor(0, 0, 0, 0.18)
-  frame:SetBackdropBorderColor(0.15, 0.15, 0.15, 0.55)
-end
-
-local function CreateAuraIcon(parent, index, anchorMode)
-  local icon = CreateFrame("Button", nil, parent)
-  icon:SetSize(14, 14)
-  icon:SetFrameStrata(parent:GetFrameStrata())
-  icon:SetFrameLevel(parent:GetFrameLevel() + 20)
-  icon.tex = icon:CreateTexture(nil, "ARTWORK")
-  icon.tex:SetAllPoints()
-  icon.border = icon:CreateTexture(nil, "OVERLAY")
-  icon.border:SetTexture("Interface/Buttons/UI-Debuff-Overlays")
-  icon.border:SetTexCoord(.296875, .5703125, 0, .515625)
-  icon.border:SetAllPoints(icon)
-  icon.count = icon:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  icon.count:SetPoint("BOTTOMRIGHT", 1, -1)
-  icon.count:SetText("")
-  icon.spellID = nil
-  if icon.SetPropagateMouseClicks then icon:SetPropagateMouseClicks(true) end
-  icon:EnableMouse(true)
-  icon:SetScript("OnMouseUp", function(self, button)
-    if button == "LeftButton" and IsShiftKeyDown and IsShiftKeyDown() and self.spellID and SFA and SFA.AddBuffToBlacklist then
-      SFA:AddBuffToBlacklist(self.spellID)
-    end
-  end)
-  if anchorMode == "bar" then
-    if index == 1 then
-      icon:SetPoint("RIGHT", parent, "RIGHT", -4, 0)
-    else
-      icon:SetPoint("RIGHT", parent.buffIcons[index - 1], "LEFT", -2, 0)
-    end
-  else
-    if index == 1 then
-      icon:SetPoint("TOPRIGHT", parent, "BOTTOMRIGHT", -2, -2)
-    else
-      icon:SetPoint("RIGHT", parent.debuffIcons[index - 1], "LEFT", -2, 0)
-    end
-  end
-  icon:Hide()
-  return icon
-end
-
-function SFA:GetEnemySpecID(unit)
-  local idx = unit and unit:match("arena(%d)")
-  idx = idx and tonumber(idx)
-  if not idx then return nil end
-  return GetArenaOpponentSpec and GetArenaOpponentSpec(idx) or nil
-end
-
-function SFA:IsHealerUnit(unit, frame)
-  local sim = frame and frame.simulationData or self:GetSimulationData(unit)
-  if sim then
-    return sim.healer == true, nil
-  end
-
-  local specID = self:GetEnemySpecID(unit)
-  if specID and self.healerSpecs[specID] then
-    return true, specID
-  end
-
-  if UnitGroupRolesAssigned then
-    local ok, role = pcall(UnitGroupRolesAssigned, unit)
-    role = ok and SFA_SafeValue(role) or nil
-    if role == "HEALER" then
-      return true, nil
-    end
-  end
-
-  if unit == "player" and GetSpecialization and GetSpecializationInfo then
-    local specIndex = GetSpecialization()
-    if specIndex then
-      local spec = GetSpecializationInfo(specIndex)
-      if spec and self.healerSpecs[spec] then
-        return true, spec
-      end
-    end
-  end
-
-  return false, nil
-end
-
-
--- Returns true if a conditional body already specifies a target
--- (either an @unit token or a target=unit clause).
 local function SFA_CondHasTarget(condBody)
   if not condBody then return false end
   if condBody:find("@", 1, true) then return true end
@@ -1527,418 +1002,930 @@ local function SFA_ResolveMacroForUnit(macroText, unit)
   return table.concat(outLines, "\n")
 end
 
-function SFA:ApplyClickBindings(frame, group)
+-- Moved up (0.25.5 bugfix) to before every call site: this was previously
+-- declared much further down the file, so any call to it from code defined
+-- EARLIER (like the click-cast driver section right below) resolved to a
+-- nil global instead of this local, throwing "attempt to call a nil value"
+-- the moment it was ever actually reached. Confirmed via a live debug dump
+-- (2026-08-31): "friendlyattr apply-native ok=false err=...Core.lua:1312:
+-- attempt to call a nil value" -- one unconditional call to it inside
+-- SFA_ApplyNativeClickToFrame's new capture-logging line (0.25.4) threw on
+-- the very first frame processed, aborting the ENTIRE apply pass before any
+-- frame got its click-cast attributes -- which is why click-cast broke
+-- completely (not just the Ctrl+Alt menu feature) as soon as that line
+-- started actually running. A second, older, latent instance of the same
+-- bug also existed in the RegisterForClicks log line just below
+-- (`okReg and "" or SFA_DescribeValue(regErr)`) -- it never manifested
+-- before because Lua's short-circuit "and/or" only evaluates the
+-- SFA_DescribeValue(regErr) branch when okReg is false, which in practice
+-- it never was.
+local function SFA_IsSecretSafe(v)
+  if v == nil or not issecretvalue then return false end
+  local ok, r = pcall(issecretvalue, v)
+  return ok and r or false
+end
+
+local function SFA_DescribeValue(v)
+  if v == nil then return "nil" end
+  if SFA_IsSecretSafe(v) then return "<secret>" end
+  local ok, s = pcall(tostring, v)
+  return ok and s or "<unprintable>"
+end
+
+-- ---------------------------------------------------------------------
+-- Secure click-cast attribute driver.
+--
+-- Writing to Blizzard's reserved action-button attributes (unit, type1-5,
+-- macrotext1-5, *type1-5, *macrotext1-5) directly from insecure addon Lua
+-- -- even a single, non-redundant write -- taints that execution. That
+-- taint is what was escalating into a hard "*** ForceTaint_Strong ***"
+-- block, which then prevented this addon from reading secret aura data
+-- (HoTs/debuffs) in combat for the rest of the session.
+--
+-- The Blizzard-sanctioned fix (used by Cell, Clique, Grid2, VuhDo, etc.)
+-- is to never write those attributes directly. Instead:
+--   1. A single hidden "driver" frame is created with SecureHandlerBaseTemplate
+--      + SecureHandlerAttributeTemplate.
+--   2. Each unit button is registered with the driver via
+--      SecureHandlerSetFrameRef -- itself a safe, non-tainting bridge from
+--      insecure code into the secure world.
+--   3. Insecure code only ever stages plain, arbitrary-named attributes
+--      (sfa-pending-*) on the driver, then fires a trigger attribute.
+--   4. The driver's _onattributechanged snippet -- which executes inside
+--      Blizzard's secure/restricted environment, not as addon code -- is
+--      the only thing that ever calls SetAttribute() with the reserved
+--      names on the actual unit buttons. Because that write happens
+--      inside a secure snippet, it does not accrue insecure-addon taint.
+-- ---------------------------------------------------------------------
+
+-- SecureHandlerBaseTemplate alone only provides the secure execution
+-- environment (Run/Execute/SetFrameRef); it does NOT by itself wire up the
+-- "_onattributechanged" attribute to actually fire when an attribute
+-- changes. SecureHandlerAttributeTemplate is the template that does that
+-- wiring (it also inherits SecureHandlerBaseTemplate). Without it, setting
+-- "_onattributechanged" below was inert -- the snippet was stored but
+-- never executed, so buttons never received their click attributes at
+-- all, which is why click-casting stopped working entirely.
+--
+-- 0.25.0 redesign: this addon no longer renders its own unit frames, so
+-- the driver only ever touches Blizzard-owned frames now ("sfa-apply-
+-- native" below) -- it never writes the "unit" attribute, only ever
+-- Left/Right/Middle-click type/macrotext, and only when the user has
+-- actually configured that button.
+local SFA_ClickDriver = CreateFrame("Frame", "SFA_ClickCastDriver", UIParent, "SecureHandlerBaseTemplate, SecureHandlerAttributeTemplate")
+SFA_ClickDriver:Hide()
+
+SFA_ClickDriver:SetAttribute("_onattributechanged", [==[
+  if name == "sfa-apply-native" then
+    -- Supplemental click-cast on a Blizzard-owned secure frame. Never
+    -- touches "unit" -- that stays entirely Blizzard's. Each button's
+    -- type/macrotext attributes are ONLY written when the matching
+    -- "sfa-native-setN" flag is true, meaning the user has actually
+    -- configured a macro for that button. An unconfigured button is left
+    -- completely alone so Blizzard's default for it (left-click-to-target,
+    -- right-click-menu, etc.) keeps working untouched.
+    local btn = self:GetFrameRef(self:GetAttribute("sfa-apply-native-target"))
+    if btn then
+      -- 0.25.9 fix: each button now ALWAYS writes something, one way or
+      -- the other -- either the configured macro (setN true) or an
+      -- explicit nil/clear (setN false). Before this, an unconfigured
+      -- button just skipped the whole block, which meant a button that
+      -- USED to be configured (macro removed, or the whole group disabled
+      -- via the new per-character enable checkbox) kept whatever type/
+      -- macrotext it was last given -- Blizzard's default for that button
+      -- never actually came back. Clearing explicitly hands control back.
+      if self:GetAttribute("sfa-native-set1") then
+        btn:SetAttribute("type1", self:GetAttribute("sfa-native-type1"))
+        btn:SetAttribute("macrotext1", self:GetAttribute("sfa-native-macrotext1"))
+        btn:SetAttribute("*type1", self:GetAttribute("sfa-native-type1"))
+        btn:SetAttribute("*macrotext1", self:GetAttribute("sfa-native-macrotext1"))
+      else
+        btn:SetAttribute("type1", nil)
+        btn:SetAttribute("macrotext1", nil)
+        btn:SetAttribute("*type1", nil)
+        btn:SetAttribute("*macrotext1", nil)
+      end
+      if self:GetAttribute("sfa-native-set2") then
+        btn:SetAttribute("type2", self:GetAttribute("sfa-native-type2"))
+        btn:SetAttribute("macrotext2", self:GetAttribute("sfa-native-macrotext2"))
+        btn:SetAttribute("*type2", self:GetAttribute("sfa-native-type2"))
+        btn:SetAttribute("*macrotext2", self:GetAttribute("sfa-native-macrotext2"))
+      else
+        btn:SetAttribute("type2", nil)
+        btn:SetAttribute("macrotext2", nil)
+        btn:SetAttribute("*type2", nil)
+        btn:SetAttribute("*macrotext2", nil)
+      end
+      if self:GetAttribute("sfa-native-set3") then
+        btn:SetAttribute("type3", self:GetAttribute("sfa-native-type3"))
+        btn:SetAttribute("macrotext3", self:GetAttribute("sfa-native-macrotext3"))
+        btn:SetAttribute("*type3", self:GetAttribute("sfa-native-type3"))
+        btn:SetAttribute("*macrotext3", self:GetAttribute("sfa-native-macrotext3"))
+      else
+        btn:SetAttribute("type3", nil)
+        btn:SetAttribute("macrotext3", nil)
+        btn:SetAttribute("*type3", nil)
+        btn:SetAttribute("*macrotext3", nil)
+      end
+    end
+  end
+]==])
+
+local SFA_ClickApplySeq = 0
+
+-- Registers a unit button with the secure driver so the driver's snippet
+-- can look it up later via GetFrameRef. Must be called once per button,
+-- from insecure code (this specific API is designed to be safe to call
+-- that way), typically right after the button is created.
+--
+-- refKey is an explicit ref-name override. SecureHandlerSetFrameRef only
+-- needs SOME unique string key -- it does NOT have to be the frame's own
+-- GetName() -- which matters because some of Blizzard's own native frames
+-- (e.g. the individual member buttons inside the modern unified
+-- "PartyFrame") are created anonymously (GetName() == nil) and would
+-- otherwise be unreachable here. Falls back to frame:GetName() when no
+-- refKey is given, for callers that only ever deal in named frames.
+local function SFA_RegisterClickFrame(frame, refKey)
   if not frame then return end
+  refKey = refKey or frame:GetName()
+  if not refKey then return end
+  frame.sfaNativeClickRefKey = refKey
+  SecureHandlerSetFrameRef(SFA_ClickDriver, refKey, frame)
+end
+
+-- ---------------------------------------------------------------------
+-- Supplemental click-cast on Blizzard's own native arena-enemy frames.
+--
+-- Found via /sfascanarena (2026-08-31, see project notes): Midnight's
+-- replacement for the old ArenaEnemyFrame1-5 globals is
+-- ArenaEnemyMatchFrame1-5, each a secure unit button already bound to
+-- arena1-5. Unlike this addon's own enemy frames, Blizzard's frame isn't
+-- subject to the Secret Values restriction, so it already shows real
+-- CC/debuffs/role info. Explicit user request: keep this addon's own
+-- frames exactly as they are, but ALSO let the user's configured
+-- click-cast macros fire when clicking Blizzard's frame -- purely
+-- additive, nothing here changes what SFA's own frames do.
+--
+-- This uses a SEPARATE, more restrictive driver path ("sfa-apply-native",
+-- defined on SFA_ClickDriver above) than the addon's own frames use.
+-- "unit" is never touched -- that stays Blizzard's own. Each button
+-- (Left/Right/Middle/4/5, type1-5) is only ever written when the user has
+-- actually configured a macro for it (a per-button "setN" flag on the
+-- driver); an unconfigured button is left completely alone so Blizzard's
+-- default for it (left-click-to-target, right-click-menu, etc.) keeps
+-- working untouched. Found via live testing 2026-08-31: the original
+-- version of this feature hardcoded Middle/4/5-only coverage on the
+-- assumption that users keep Blizzard's Left/Right defaults -- wrong for
+-- a user whose primary CC macro is on LeftButton, which this addon's own
+-- frames already fully override. The setN-flag design generalizes to
+-- both cases.
+-- ---------------------------------------------------------------------
+
+-- 0.24.39, ROOT CAUSE FOUND: the shown/visible dump (0.24.37) proved it --
+-- ArenaEnemyMatchFrame1-5 report shown=true but visible=false (an ancestor
+-- is hidden -- they're not actually on screen), while CompactArenaFrameMember
+--1-5 (the "raid-style" arena panel, same unit-button family as compact
+-- raid/party frames) report shown=true AND visible=true, with the exact
+-- same unit=arenaN binding. This user has raid-style arena frames active,
+-- so every click test so far landed on CompactArenaFrameMember -- a frame
+-- our feature never wrote a single attribute to. That's why attributes were
+-- always correct, RegisterForClicks always succeeded, and every hook on
+-- ArenaEnemyMatchFrame1-5 (and its HealthBar/ManaBar) stayed silent no
+-- matter what: none of it was the frame actually being clicked. Both
+-- families use the identical type1-5/macrotext1-5/unit attribute
+-- convention, so simply adding CompactArenaFrameMember1-5 here extends
+-- every existing code path (attribute writes, RegisterForClicks, the
+-- diagnostic hooks) to it for free -- writing harmless attributes to
+-- whichever family isn't currently shown costs nothing.
+local SFA_NATIVE_ARENA_FRAME_NAMES = {
+  "ArenaEnemyMatchFrame1",
+  "ArenaEnemyMatchFrame2",
+  "ArenaEnemyMatchFrame3",
+  "ArenaEnemyMatchFrame4",
+  "ArenaEnemyMatchFrame5",
+  "CompactArenaFrameMember1",
+  "CompactArenaFrameMember2",
+  "CompactArenaFrameMember3",
+  "CompactArenaFrameMember4",
+  "CompactArenaFrameMember5",
+}
+
+-- 0.25.0 redesign, step 1: supplemental click-cast on Blizzard's native
+-- FRIENDLY frames (player/party/raid), mirroring the arena-enemy approach
+-- above -- same lesson applies (see the arena "shown vs visible" saga in
+-- the project notes): Blizzard exposes more than one frame family for the
+-- same role depending on user display settings, so every plausible family
+-- is listed here and whichever one isn't actually on screen just gets
+-- harmless unused attribute writes. Covers:
+--   - PlayerFrame (self)
+--   - PartyMemberFrame1-4 (classic, non-raid-style party frames)
+--   - CompactPartyFrameMember1-5 (raid-style party frames)
+--   - CompactRaidFrame1-40 ("Combined Groups" raid layout)
+--   - CompactRaidGroup1Member1 .. CompactRaidGroup8Member5 ("By Group" raid layout)
+local SFA_NATIVE_FRIENDLY_FRAME_NAMES = (function()
+  local names = { "PlayerFrame" }
+  for i = 1, 4 do names[#names + 1] = "PartyMemberFrame" .. i end
+  for i = 1, 5 do names[#names + 1] = "CompactPartyFrameMember" .. i end
+  for i = 1, 40 do names[#names + 1] = "CompactRaidFrame" .. i end
+  for g = 1, 8 do
+    for m = 1, 5 do
+      names[#names + 1] = "CompactRaidGroup" .. g .. "Member" .. m
+    end
+  end
+  return names
+end)()
+
+-- Diagnostic helper (0.24.35): our OnClick/OnMouseDown/OnMouseUp hooks on
+-- ArenaEnemyMatchFrame1-5 itself never fired even in a live test where the
+-- user confirmed clicking did visibly select/target the unit. That means
+-- the mouse click isn't landing on THIS frame object at all -- most likely
+-- a child region (health bar, etc.) is the actual mouse-interactive widget
+-- and is either handling the click itself or is simply what's on top under
+-- the cursor. This walks the frame's mouse-enabled state and its direct
+-- children (name + IsMouseEnabled) so we can see which sub-object is
+-- actually positioned to receive the click.
+local function SFA_DescribeFrameChildren(f)
+  local okSelfMouse, selfMouse = pcall(f.IsMouseEnabled, f)
+  local parts = { string.format("self.IsMouseEnabled=%s", tostring(okSelfMouse and selfMouse)) }
+
+  local okChildren, children = pcall(function() return { f:GetChildren() } end)
+  if not okChildren then
+    parts[#parts + 1] = "children=<error>"
+    return table.concat(parts, " ")
+  end
+
+  for i, child in ipairs(children) do
+    local okName, name = pcall(child.GetName, child)
+    local okType, objType = pcall(child.GetObjectType, child)
+    local okMouse, mouseOn = pcall(child.IsMouseEnabled, child)
+    parts[#parts + 1] = string.format("child%d=%s(type=%s,mouse=%s)", i,
+      (okName and name) or "<unnamed>",
+      (okType and objType) or "?",
+      tostring(okMouse and mouseOn))
+  end
+  return table.concat(parts, " ")
+end
+
+local SFA_NATIVE_CLICK_ATTR_KEYS = {
+  "type1", "macrotext1", "set1",
+  "type2", "macrotext2", "set2",
+  "type3", "macrotext3", "set3",
+}
+
+-- 0.25.6 bugfix: this used to skip the actual attribute write whenever
+-- `desired` matched the last-applied signature we cached on the frame
+-- object (frame.sfaNativeClickSig), on the assumption that identical
+-- input means nothing needs to change on screen. That assumption breaks
+-- for any frame Blizzard itself resets or recycles after we've applied to
+-- it once -- which is exactly what happens to the anonymous/pooled party
+-- and raid member buttons (and possibly others) on roster changes: our
+-- cache still remembers "already applied successfully", so every later
+-- pass with the same macros short-circuited and never rewrote the actual
+-- type1-3/macrotext1-3 attributes Blizzard had since wiped, leaving every
+-- managed frame stuck at nil despite ok=true and no error anywhere. Since
+-- these writes are cheap and only run on discrete events (not every
+-- frame), always writing unconditionally is the safe fix -- no more
+-- caching, no more risk of a stale "already applied" belief going stale.
+local function SFA_ApplyNativeClickDriver(frame, desired)
+  local refKey = frame and frame.sfaNativeClickRefKey
+  if not refKey then return end
+
+  for _, key in ipairs(SFA_NATIVE_CLICK_ATTR_KEYS) do
+    SFA_ClickDriver:SetAttribute("sfa-native-" .. key, desired[key])
+  end
+  SFA_ClickApplySeq = SFA_ClickApplySeq + 1
+  SFA_ClickDriver:SetAttribute("sfa-apply-native-target", refKey)
+  SFA_ClickDriver:SetAttribute("sfa-apply-native", SFA_ClickApplySeq)
+end
+
+-- Generic supplemental click-cast applier: takes any list of native
+-- Blizzard secure unit-button frame names plus which per-spec macro table
+-- ("friendly" or "enemy") to pull Left/Right/Middle macros from, and drives
+-- them all through the same additive, non-tainting mechanism proven out on
+-- arena frames (see SFA_ApplyNativeClickDriver above). "unit" is never
+-- touched -- that stays entirely Blizzard's. Deliberately NOT gated on
+-- InCombatLockdown(): only the actual reserved-attribute writes are
+-- combat-restricted, and those happen inside the secure snippet, which
+-- Blizzard explicitly allows to run during combat. Gating the staging
+-- calls here was a proven bug on arena (2026-08-31 live test) -- roster/
+-- combat updates fire constantly during a fight, so gating them out here
+-- could mean a whole encounter passes without ever applying.
+local SFA_NATIVE_CLICK_BUTTON_KEYS = {
+  LeftButton = { "type1", "macrotext1", "set1" },
+  RightButton = { "type2", "macrotext2", "set2" },
+  MiddleButton = { "type3", "macrotext3", "set3" },
+}
+
+-- 0.25.7, second attempt at the Ctrl+Alt+RightClick "restore Blizzard's
+-- menu" request -- completely reworked approach after the 0.25.2/0.25.4
+-- attempts both failed (see project notes for the full postmortem: the
+-- native "togglemenu" secure action type is dead on this client, and
+-- Blizzard's actual default right-click behavior isn't attribute-driven at
+-- all, so there was nothing to capture-and-replay either).
+--
+-- This version is DELIBERATELY a plain, insecure OnClick hook -- it never
+-- touches the type/macrotext secure-attribute system that drives
+-- click-cast above, so unlike the previous two attempts, a bug or a wrong
+-- guess here CANNOT break click-cast again: worst case, this one handler
+-- throws (caught by pcall) or the menu API call does nothing.
+--
+-- We could not find documented, verified proof of the exact modern
+-- Blizzard call that reopens a unit's NATIVE popup menu (research pointed
+-- at a new "Menu" API -- MenuUtil.CreateContextMenu + MENU_UNIT_* tags --
+-- but not a confirmed entry point for triggering one for an arbitrary
+-- unit/frame). Rather than guess at unverified internal Blizzard functions
+-- (risky: an unverified call into Blizzard's menu internals could taint
+-- something even if it doesn't throw an error pcall would catch), this
+-- ships two things instead:
+--   1. A small custom menu built entirely from the OFFICIALLY CONFIRMED
+--      MenuUtil.CreateContextMenu API (verified via Blizzard's own
+--      published implementation guide) with a couple of always-safe,
+--      never-protected actions (Whisper, Inspect) as a working proof that
+--      the trigger + menu pipeline functions end-to-end.
+--   2. SFA:DumpMenuAPI() (wired to a Debug-tab button) that enumerates the
+--      real Menu/MenuUtil table contents and a handful of legacy globals
+--      on THIS live client, so the next iteration can target the actual
+--      confirmed function name instead of guessing again.
+-- 0.25.13: now that the sniffer confirmed a REAL tag ("MENU_UNIT_SELF" for
+-- PlayerFrame, 2026-09-01 live log), and the dump showed a promising
+-- Menu.PopulateDescription function, the plan changes: instead of trying
+-- to get BLIZZARD'S OWN click handler to fire (confirmed impossible once
+-- click-cast has touched a frame this session -- see the 0.25.9/0.25.10
+-- saga), we build our OWN menu container via the already-working
+-- MenuUtil.CreateContextMenu, then ask Blizzard's Menu system to fill it
+-- with the SAME content it would generate for that tag. This doesn't rely
+-- on the frame's own click routing at all, so it should work regardless of
+-- whether click-cast is enabled for that frame.
+--
+-- Tag names beyond MENU_UNIT_SELF are still unconfirmed -- returns an
+-- ordered list of plausible candidates per unit so SFA_TryPopulateNativeMenu
+-- can try each and log which (if any) actually worked, refining this list
+-- from real data rather than more guessing.
+local function SFA_ResolveMenuTagCandidates(unit)
+  if not unit then return {} end
+  local okExists, exists = pcall(UnitExists, unit)
+  if not (okExists and exists) then return {} end
+
+  local okSelf, isSelf = pcall(UnitIsUnit, unit, "player")
+  if okSelf and isSelf then return { "MENU_UNIT_SELF" } end
+
+  local okParty, isParty = pcall(UnitInParty, unit)
+  local unitUpper = unit:upper()
+  if okParty and isParty then
+    return { "MENU_UNIT_" .. unitUpper, "MENU_UNIT_PARTY" }
+  end
+
+  local okRaid, isRaid = pcall(UnitInRaid, unit)
+  if okRaid and isRaid then
+    return { "MENU_UNIT_RAID", "MENU_UNIT_" .. unitUpper }
+  end
+
+  local okIsPlayer, isPlayer = pcall(UnitIsPlayer, unit)
+  if okIsPlayer and isPlayer then
+    local okFriend, isFriend = pcall(UnitIsFriend, "player", unit)
+    if okFriend and isFriend then
+      return { "MENU_UNIT_PLAYER" }
+    end
+    return { "MENU_UNIT_ENEMY_PLAYER", "MENU_UNIT_PLAYER" }
+  end
+
+  -- Non-player unit (NPC/creature/dummy) -- least confirmed category.
+  return { "MENU_UNIT_UNIT", "MENU_UNIT_ENEMY_PLAYER" }
+end
+
+-- Tries Menu.PopulateDescription with a few plausible argument orders
+-- (signature not confirmed by documentation) against each candidate tag,
+-- stopping at the first that doesn't error. Logs every attempt either way
+-- -- a tag that's simply wrong/unregistered may not error at all, just
+-- populate nothing, so the log plus the user's visual report together are
+-- what actually confirms success, not the pcall result alone.
+local function SFA_TryPopulateNativeMenu(self, rootDescription, unit)
+  if not (Menu and type(Menu.PopulateDescription) == "function") then
+    self:Log("native-click ctrlalt-menu Menu.PopulateDescription unavailable")
+    return false
+  end
+
+  local candidates = SFA_ResolveMenuTagCandidates(unit)
+  if #candidates == 0 then
+    self:Log("native-click ctrlalt-menu no-tag-candidates unit=%s", SFA_DescribeValue(unit))
+    return false
+  end
+
+  local contextData = { unit = unit }
+  for _, tag in ipairs(candidates) do
+    local signatures = {
+      function() return Menu.PopulateDescription(rootDescription, tag, contextData) end,
+      function() return Menu.PopulateDescription(tag, rootDescription, contextData) end,
+      function() return Menu.PopulateDescription(rootDescription, tag) end,
+    }
+    for sigIndex, attempt in ipairs(signatures) do
+      local ok, err = pcall(attempt)
+      self:Log("native-click ctrlalt-menu populate tag=%s sig=%d ok=%s err=%s",
+        tag, sigIndex, tostring(ok), ok and "" or SFA_DescribeValue(err))
+      if ok then return true, tag, sigIndex end
+    end
+  end
+  return false
+end
+
+-- 0.25.18: live-tested (2026-09-01) that MENU_UNIT_UNIT -- the fallback tag
+-- used for any non-player unit (NPCs, critters, etc) -- opens successfully
+-- (no double-prefix, sniffer confirms tags={[1]=MENU_UNIT_UNIT}) but is
+-- populated with basically nothing: title only, no buttons, for a friendly
+-- NPC target. This means the unit-RELATIONSHIP-based guessing in
+-- SFA_ResolveMenuTagCandidates is the wrong axis entirely for TargetFrame
+-- and FocusFrame specifically: Blizzard's real target/focus right-click
+-- menu is a single fixed tag keyed by FRAME IDENTITY ("TARGET"/"FOCUS"),
+-- populated with whatever options make sense for the current target/focus
+-- internally by Blizzard's own menu system -- not chosen by us via a
+-- per-unit-type tag guess. (SFA_MENU_OBSERVER_TAGS already anticipated
+-- MENU_UNIT_TARGET/MENU_UNIT_FOCUS back in 0.25.15, but the resolver never
+-- actually tried them.) Frame identity is known and fixed for PlayerFrame/
+-- TargetFrame/FocusFrame, so those get a confident single-tag hint tried
+-- FIRST; for party/raid/arena member frames the identity is still a good
+-- signal (a party member's menu should be "PARTY" regardless of who's in
+-- that slot) but is not yet live-confirmed, so those hints are tried before
+-- -- but do not replace -- the existing unit-relationship guesses as a
+-- fallback chain.
+local function SFA_ResolveFrameMenuTagHints(refKey)
+  if type(refKey) ~= "string" then return {} end
+  if refKey == "PlayerFrame" then return { "SELF" } end
+  if refKey == "TargetFrame" then return { "TARGET" } end
+  if refKey == "FocusFrame" then return { "FOCUS" } end
+  if refKey:find("Party", 1, true) then return { "PARTY" } end
+  if refKey:find("Raid", 1, true) then return { "RAID_PLAYER", "RAID" } end
+  if refKey:find("Arena", 1, true) then return { "ARENAENEMY", "ENEMY_PLAYER" } end
+  return {}
+end
+
+-- 0.25.14: Menu.PopulateDescription (0.25.13) turned out to be a dead end
+-- -- live-tested (2026-09-01): it returns ok=true (no Lua error) for both
+-- MENU_UNIT_SELF and MENU_UNIT_UNIT, but visibly produces nothing, only
+-- the Whisper/Inspect fallback showed. That means either the tag names are
+-- wrong, the contextData shape is wrong, or this simply isn't the right
+-- function for "give me tag X's content right now" -- no way to tell
+-- which from a silent no-op. Falling back to the OTHER real lead from the
+-- API dump: UnitPopup_OpenMenu is a genuine live function (confirmed via
+-- SFA:DumpMenuAPI, "= function", not nil) and its very name suggests it
+-- OPENS a menu outright rather than filling a description object --
+-- tried first, before building our own MenuUtil container, since if it
+-- works we don't need our own container at all. Every candidate is
+-- logged regardless of outcome (same reasoning as SFA_TryPopulateNativeMenu:
+-- a wrong argument shape may not error, it may just do nothing).
+local function SFA_TryOpenUnitMenuLegacy(self, unit, refKey)
+  if not (UnitPopup_OpenMenu and type(UnitPopup_OpenMenu) == "function") then
+    self:Log("native-click ctrlalt-menu UnitPopup_OpenMenu unavailable")
+    return false
+  end
+
+  -- 0.25.17 fix: live-tested (2026-09-01) that passing the FULL tag
+  -- ("MENU_UNIT_SELF") as "which" produces a menu literally tagged
+  -- "MENU_UNIT_MENU_UNIT_SELF" (confirmed via the sniffer log) -- meaning
+  -- UnitPopup_OpenMenu prepends "MENU_UNIT_" itself, so "which" must be
+  -- the bare suffix ("SELF"). That's why the menu opened (with the right
+  -- name, read straight from contextData.unit) but was always empty: it
+  -- was really open under a tag nothing is registered against. Suffix
+  -- candidates now tried FIRST.
+  --
+  -- 0.25.18: frame-identity hints (SFA_ResolveFrameMenuTagHints) go FIRST,
+  -- ahead of the unit-relationship guesses -- live-tested (2026-09-01) that
+  -- MENU_UNIT_UNIT opens successfully but empty for a friendly NPC target,
+  -- meaning relationship-based guessing is the wrong axis for TargetFrame/
+  -- FocusFrame specifically (see comment on SFA_ResolveFrameMenuTagHints).
+  local whichCandidates = {}
+  local seen = {}
+  for _, suffix in ipairs(SFA_ResolveFrameMenuTagHints(refKey)) do
+    if not seen[suffix] then seen[suffix] = true; whichCandidates[#whichCandidates + 1] = suffix end
+  end
+  local tagCandidates = SFA_ResolveMenuTagCandidates(unit)
+  for _, tag in ipairs(tagCandidates) do
+    local suffix = tag:match("^MENU_UNIT_(.+)$")
+    if suffix and not seen[suffix] then seen[suffix] = true; whichCandidates[#whichCandidates + 1] = suffix end
+  end
+  for _, tag in ipairs(tagCandidates) do
+    if not seen[tag] then seen[tag] = true; whichCandidates[#whichCandidates + 1] = tag end
+  end
+
+  for _, which in ipairs(whichCandidates) do
+    local contextData = { unit = unit }
+    local signatures = {
+      function() return UnitPopup_OpenMenu(which, contextData) end,
+      function() return UnitPopup_OpenMenu(unit, contextData) end,
+      function() return UnitPopup_OpenMenu(which, unit) end,
+    }
+    for sigIndex, attempt in ipairs(signatures) do
+      local ok, err = pcall(attempt)
+      self:Log("native-click ctrlalt-menu legacy-open which=%s sig=%d ok=%s err=%s",
+        tostring(which), sigIndex, tostring(ok), ok and "" or SFA_DescribeValue(err))
+      if ok then return true, which, sigIndex end
+    end
+  end
+  return false
+end
+
+local function SFA_OnManagedFrameClick(self, frame, refKey, button)
+  if button ~= "RightButton" then return end
 
   local unit = frame.unit
-
-  -- If the enemy single-target slot is currently showing a friendly unit,
-  -- cast whatever is configured for the friendly frame instead of enemy.
-  local clickGroup = group
-  if group == "enemy" and self:IsFriendlyOverrideTarget(unit) then
-    clickGroup = "friendly"
+  if type(unit) ~= "string" then
+    local okAttr, attrUnit = pcall(frame.GetAttribute, frame, "unit")
+    if okAttr and type(attrUnit) == "string" then unit = attrUnit end
   end
 
-  -- Use per-character, per-spec click macros
-  local clicks = self:GetSpecClickTable(clickGroup)
-  if type(clicks) ~= "table" then return end
+  -- 0.25.9: sniff which native menu tag(s), if any, Blizzard just opened
+  -- for this click -- only actually opens something when click-cast is
+  -- disabled for this group (new per-character checkbox), since otherwise
+  -- our own macro/menu takes over RightButton entirely and there's no
+  -- native menu to sniff. Unconditional on modifiers, read-only, no side
+  -- effects -- purpose is to learn the real MENU_UNIT_* tag name Blizzard
+  -- uses for each frame type (player/party/target/etc), from the live
+  -- client, since that couldn't be confirmed from documentation alone.
+  if Menu and type(Menu.GetOpenMenuTags) == "function" then
+    C_Timer.After(0, function()
+      local okTags, tags = pcall(Menu.GetOpenMenuTags)
+      if not okTags then
+        self:Log("native-click menu-tag-sniff frame=%s error=%s", refKey, SFA_DescribeValue(tags))
+        return
+      end
+      if type(tags) ~= "table" then
+        self:Log("native-click menu-tag-sniff frame=%s tags-type=%s", refKey, type(tags))
+        return
+      end
+      local parts = {}
+      for k, v in pairs(tags) do
+        parts[#parts + 1] = string.format("[%s]=%s", SFA_DescribeValue(k), SFA_DescribeValue(v))
+      end
+      self:Log("native-click menu-tag-sniff frame=%s unit=%s tags={%s}",
+        refKey, SFA_DescribeValue(unit), table.concat(parts, ", "))
+    end)
+  end
 
-  frame:SetAttribute("unit", unit)
+  if not (IsAltKeyDown and IsControlKeyDown and IsAltKeyDown() and IsControlKeyDown()) then return end
 
-  local allowedButtons = {
-    LeftButton = { "type1", "macrotext1", "*type1", "*macrotext1" },
-    RightButton = { "type2", "macrotext2", "*type2", "*macrotext2" },
-    MiddleButton = { "type3", "macrotext3", "*type3", "*macrotext3" },
-    Button4 = { "type4", "macrotext4", "*type4", "*macrotext4" },
-    Button5 = { "type5", "macrotext5", "*type5", "*macrotext5" },
+  self:Log("native-click ctrlalt-menu trigger frame=%s unit=%s", refKey, SFA_DescribeValue(unit))
+
+  -- 0.25.14: try the legacy-named-but-live UnitPopup_OpenMenu first -- if
+  -- it actually opens Blizzard's own menu, we're done and don't need our
+  -- own MenuUtil container at all.
+  local openedLegacy, legacyWhich, legacySig = SFA_TryOpenUnitMenuLegacy(self, unit, refKey)
+  self:Log("native-click ctrlalt-menu legacy-opened=%s which=%s sig=%s",
+    tostring(openedLegacy), tostring(legacyWhich), tostring(legacySig))
+  if openedLegacy then return end
+
+  if not (MenuUtil and type(MenuUtil.CreateContextMenu) == "function") then
+    self:Log("native-click ctrlalt-menu MenuUtil.CreateContextMenu unavailable")
+    return
+  end
+
+  local okMenu, menuErr = pcall(function()
+    MenuUtil.CreateContextMenu(frame, function(owner, rootDescription)
+      rootDescription:CreateTitle(SFA_DescribeValue(unit))
+
+      -- 0.25.13: try to fill the menu with Blizzard's REAL content for
+      -- this unit (see SFA_TryPopulateNativeMenu). Independent of the
+      -- frame's own click routing, so this should work whether or not
+      -- click-cast is currently overriding this button.
+      local populated, matchedTag, matchedSig = SFA_TryPopulateNativeMenu(self, rootDescription, unit)
+      self:Log("native-click ctrlalt-menu populated=%s tag=%s sig=%s",
+        tostring(populated), tostring(matchedTag), tostring(matchedSig))
+
+      -- Always-present safety net (proven working since 0.25.7) so the
+      -- menu is never completely empty even if native population above
+      -- silently did nothing (wrong/unregistered tag).
+      rootDescription:CreateButton("Whisper", function()
+        pcall(function()
+          local name = UnitName(unit)
+          if name and ChatFrame_SendTell then ChatFrame_SendTell(name) end
+        end)
+      end)
+
+      rootDescription:CreateButton("Inspect", function()
+        pcall(function()
+          if InspectUnit then
+            InspectUnit(unit)
+          elseif NotifyInspect then
+            NotifyInspect(unit)
+          end
+        end)
+      end)
+    end)
+  end)
+  self:Log("native-click ctrlalt-menu open ok=%s err=%s",
+    tostring(okMenu), okMenu and "" or SFA_DescribeValue(menuErr))
+end
+
+-- 0.25.11 fix: HookScript("OnClick") registration used to live inside
+-- SFA_ApplyNativeClickToFrame's "not registered" branch -- which, since
+-- 0.25.10, is entirely SKIPPED for a frame whose group is disabled and
+-- never touched before (that's the fix that let Blizzard's native
+-- right-click menu come back). Bug: that also skipped attaching the
+-- OnClick hook, so the menu-tag sniffer and the Ctrl+Alt experimental menu
+-- never fired on exactly the frames we most want to observe -- confirmed
+-- live (2026-09-01): disabling friendly + reload DID bring back the native
+-- menu, but nothing was sniffed because the hook was never attached.
+-- Split out as its own step, called unconditionally (regardless of
+-- enabled/disabled) BEFORE the enabled-gated type/macrotext registration
+-- below -- HookScript only ADDS an observer that runs after Blizzard's own
+-- click handling, it never touches type/macrotext attributes or
+-- RegisterForClicks, so (unlike those) it should not be what disables
+-- Blizzard's default menu setup. Guarded by its own flag so it only
+-- attaches once per frame either way.
+local function SFA_EnsureClickHook(self, frame, refKey)
+  if not frame or frame.sfaClickHookRegistered then return end
+  local okHook, hookErr = pcall(frame.HookScript, frame, "OnClick", function(_, button)
+    SFA_OnManagedFrameClick(self, frame, refKey, button)
+  end)
+  if not okHook then
+    self:Log("native-click ctrlalt-menu hook-failed frame=%s err=%s",
+      refKey, SFA_DescribeValue(hookErr))
+  end
+  frame.sfaClickHookRegistered = true
+end
+
+-- Enumerates the real Menu/MenuUtil API surface (and a few legacy globals)
+-- on the live client into the debug log -- pure read-only diagnostics, no
+-- side effects. Ground truth for building out SFA_OnManagedFrameClick's
+-- menu properly once we know the actual confirmed function names.
+function SFA:DumpMenuAPI()
+  local prevDebug = self.auraDebug
+  self.auraDebug = true
+  self:Log("MENU API DUMP START")
+  self:Log("menuapi Menu=%s MenuUtil=%s", type(_G.Menu), type(_G.MenuUtil))
+
+  local function dumpTable(name, t)
+    if type(t) ~= "table" then
+      self:Log("menuapi %s is not a table (%s)", name, type(t))
+      return
+    end
+    local keys = {}
+    for k in pairs(t) do keys[#keys + 1] = tostring(k) end
+    table.sort(keys)
+    for _, k in ipairs(keys) do
+      local okV, v = pcall(function() return t[k] end)
+      self:Log("menuapi %s.%s = %s", name, k, okV and type(v) or "<error>")
+    end
+    self:Log("menuapi %s key-count=%d", name, #keys)
+  end
+
+  dumpTable("Menu", _G.Menu)
+  dumpTable("MenuUtil", _G.MenuUtil)
+
+  local legacyNames = {
+    "UnitPopup_OpenMenu", "UnitPopup_ShowMenu", "ToggleDropDownMenu",
+    "UnitPopupFrames", "UIDropDownMenu_Initialize", "EasyMenu", "InspectUnit",
   }
+  for _, name in ipairs(legacyNames) do
+    self:Log("menuapi global %s = %s", name, type(_G[name]))
+  end
 
-  for button, keys in pairs(allowedButtons) do
+  self:Log("MENU API DUMP DONE")
+  self.auraDebug = prevDebug
+  DEFAULT_CHAT_FRAME:AddMessage("|cff7cc6ffSFA:|r menu API dump done -- written to debug log")
+end
+
+-- 0.25.15: UnitPopup_OpenMenu (0.25.14) turned out to be real progress --
+-- live-tested (2026-09-01): calling it with ("MENU_UNIT_SELF", {unit =
+-- "player"}) DOES open a genuine Blizzard menu shell (confirmed by the
+-- correct character name "Entaro" as its title -- our own placeholder
+-- menu would only ever show the literal string "player") but with an
+-- EMPTY body underneath -- no buttons. That means the container opens for
+-- real, but whatever contextData shape Blizzard's own registered content
+-- generator for that tag expects isn't what we're passing it, and there's
+-- no way to discover the right shape from outside.
+--
+-- So: use Menu.ModifyMenu -- the SAME confirmed-real API addons use to ADD
+-- items to a tag's menu -- purely as a PASSIVE OBSERVER. Register a
+-- pcall-wrapped callback per plausible tag that just logs every field in
+-- whatever contextData it's handed, every time a menu of that tag opens by
+-- ANY means (our own UnitPopup_OpenMenu attempts, or a real Blizzard-
+-- triggered open via the disable+reload flow). This can't taint or break
+-- anything else using that tag -- Menu.ModifyMenu callbacks are designed
+-- to be safely combinable, and ours is read-only. Installed once at
+-- PLAYER_LOGIN so it's silently collecting data for every test from here
+-- on, no extra button presses needed.
+local SFA_MENU_OBSERVER_TAGS = {
+  "MENU_UNIT_SELF", "MENU_UNIT_PLAYER", "MENU_UNIT_ENEMY_PLAYER",
+  "MENU_UNIT_PARTY", "MENU_UNIT_PARTY1", "MENU_UNIT_PARTY2", "MENU_UNIT_PARTY3", "MENU_UNIT_PARTY4",
+  "MENU_UNIT_RAID", "MENU_UNIT_UNIT", "MENU_UNIT_TARGET", "MENU_UNIT_FOCUS",
+}
+
+function SFA:InstallMenuTagObservers()
+  if self._menuTagObserversInstalled then return end
+  if not (Menu and type(Menu.ModifyMenu) == "function") then return end
+
+  for _, tag in ipairs(SFA_MENU_OBSERVER_TAGS) do
+    -- 0.25.16: log the REGISTRATION outcome too, not just callback
+    -- firings -- 0.25.15 shipped without this and the callback never once
+    -- fired even though registration was assumed to have succeeded (no
+    -- error was ever surfaced either way, so we couldn't tell registration
+    -- failure from "legitimately never triggered").
+    local okReg, regErr = pcall(Menu.ModifyMenu, tag, function(owner, rootDescription, contextData)
+      local okCall, callErr = pcall(function()
+        local parts = {}
+        if type(contextData) == "table" then
+          for k, v in pairs(contextData) do
+            parts[#parts + 1] = string.format("%s=%s", SFA_DescribeValue(k), SFA_DescribeValue(v))
+          end
+        else
+          parts[1] = "contextData-type=" .. type(contextData)
+        end
+        self:Log("native-click menu-modify-observed tag=%s owner=%s contextData={%s}",
+          tag, SFA_DescribeValue(owner and (owner.GetName and owner:GetName())), table.concat(parts, ", "))
+      end)
+      if not okCall then
+        self:Log("native-click menu-modify-observed-error tag=%s err=%s", tag, SFA_DescribeValue(callErr))
+      end
+    end)
+    self:Log("native-click menu-tag-observer-register tag=%s ok=%s err=%s",
+      tag, tostring(okReg), okReg and "" or SFA_DescribeValue(regErr))
+  end
+
+  self._menuTagObserversInstalled = true
+  self:Log("native-click menu-tag-observers installed count=%d", #SFA_MENU_OBSERVER_TAGS)
+end
+
+-- Shared per-frame apply logic, factored out (0.25.1) so it can be driven
+-- either by a known global frame name (the arena/friendly name lists) or
+-- by a live frame object found via a runtime scan (anonymous, unnamed
+-- frames -- see SFA_ApplyNativeClickToAnonymousFriendlyFrames below).
+-- refKey is whatever unique string this frame should be registered under
+-- with the secure driver; it does not have to be the frame's own name.
+local function SFA_ApplyNativeClickToFrame(self, frame, refKey, clicks)
+  if not frame then return end
+
+  if not frame.sfaNativeClickRegistered then
+    SFA_RegisterClickFrame(frame, refKey)
+
+    -- "AnyUp, AnyDown" is the broadest RegisterForClicks option and
+    -- REPLACES (not adds to) whatever Blizzard had registered, but since
+    -- it's a superset of any narrower registration, this can only add
+    -- coverage (e.g. Middle-click) -- confirmed safe and non-tainting via
+    -- the arena investigation.
+    local okReg, regErr = pcall(frame.RegisterForClicks, frame, "AnyUp", "AnyDown")
+    self:Log("native-click RegisterForClicks frame=%s ok=%s err=%s",
+      refKey, tostring(okReg), okReg and "" or SFA_DescribeValue(regErr))
+
+    frame.sfaNativeClickRegistered = true
+  else
+    -- Some frames (anonymous pool members) can be reused for a different
+    -- unit between passes, or a fresh frame object can be found under the
+    -- same refKey later. Re-pointing the ref every pass is cheap and safe
+    -- (SecureHandlerSetFrameRef is designed to be called repeatedly from
+    -- insecure code) and keeps the driver's lookup correct either way.
+    SFA_RegisterClickFrame(frame, refKey)
+  end
+
+  local unit = frame.unit
+  if type(unit) ~= "string" then
+    local okAttr, attrUnit = pcall(frame.GetAttribute, frame, "unit")
+    if okAttr and type(attrUnit) == "string" then unit = attrUnit end
+  end
+
+  local desired = {}
+  for button, keys in pairs(SFA_NATIVE_CLICK_BUTTON_KEYS) do
     local macroText = clicks[button]
     if macroText and macroText ~= "" and unit then
-      local resolved = SFA_ResolveMacroForUnit(macroText, unit)
-      frame:SetAttribute(keys[1], "macro")
-      frame:SetAttribute(keys[2], resolved)
-      frame:SetAttribute(keys[3], "macro")
-      frame:SetAttribute(keys[4], resolved)
+      desired[keys[1]] = "macro"
+      desired[keys[2]] = SFA_ResolveMacroForUnit(macroText, unit)
+      desired[keys[3]] = true
     else
-      frame:SetAttribute(keys[1], nil)
-      frame:SetAttribute(keys[2], nil)
-      frame:SetAttribute(keys[3], nil)
-      frame:SetAttribute(keys[4], nil)
-    end
-  end
-end
-
-function SFA:IsInArenaContext()
-  if IsActiveBattlefieldArena and IsActiveBattlefieldArena() then
-    return true
-  end
-  return UnitExists("arena1") or UnitExists("arena2") or UnitExists("arena3")
-end
-
-local function AddUniqueUnit(units, unit)
-  if not unit then return false end
-  local isSim = type(unit) == "string" and unit:match("^sfa_sim_")
-  if not isSim and not UnitExists(unit) then return false end
-  for _, existing in ipairs(units) do
-    if existing == unit then
-      return false
-    end
-    if not isSim and not (type(existing) == "string" and existing:match("^sfa_sim_")) and UnitIsUnit(existing, unit) then
-      return false
-    end
-  end
-  units[#units + 1] = unit
-  return true
-end
-
-
-
-
-
-function SFA:GetArenaEnemySlotCount()
-  local inArena = false
-  if IsActiveBattlefieldArena then
-    local ok, result = pcall(IsActiveBattlefieldArena)
-    inArena = ok and result or false
-  end
-  if not inArena then
-    return 0
-  end
-
-  local count = 0
-
-  if GetNumArenaOpponentSpecs then
-    local ok, result = pcall(GetNumArenaOpponentSpecs)
-    if ok and type(result) == "number" and result > 0 then
-      count = math.max(count, result)
+      -- Not configured for this button: leave Blizzard's default
+      -- completely untouched (the secure snippet skips this button's
+      -- attributes entirely when its setN flag is false/nil).
+      desired[keys[1]] = nil
+      desired[keys[2]] = nil
+      desired[keys[3]] = false
     end
   end
 
-  for i = 1, 3 do
-    local unit = "arena" .. i
-    local exists = false
-    if UnitExists then
-      local ok, result = pcall(UnitExists, unit)
-      exists = ok and result or false
-    end
-    if exists then
-      count = math.max(count, i)
-    end
-  end
-
-  if count <= 0 then
-    -- conservative fallback: 2 slots until a third is confirmed
-    count = 2
-  end
-
-  if count > 3 then count = 3 end
-  return count
+  SFA_ApplyNativeClickDriver(frame, desired)
 end
 
-function SFA:IsReservedArenaEnemySlot(group, unit)
-  if group ~= "enemy" or not unit then return false end
-  local idx = tonumber(tostring(unit):match("^arena(%d+)$"))
-  if not idx then return false end
-  local count = self:GetArenaEnemySlotCount()
-  return idx <= count
-end
+local function SFA_ApplyNativeClickBindingsForFrames(self, frameNames, clickGroup)
+  local clicks = self:GetSpecClickTable(clickGroup)
+  if type(clicks) ~= "table" then clicks = {} end
+  local enabled = self:GetCharEnabled(clickGroup)
+  if not enabled then clicks = {} end
 
+  for _, frameName in ipairs(frameNames) do
+    local frame = _G[frameName]
+    if frame then
+      -- 0.25.11: attach the read-only OnClick hook (sniffer + Ctrl+Alt
+      -- menu) unconditionally, regardless of enabled/disabled -- see
+      -- SFA_EnsureClickHook. Deliberately BEFORE the enabled gate below so
+      -- it still works on a frame we otherwise leave completely alone.
+      SFA_EnsureClickHook(self, frame, frameName)
 
-
-
-
-function SFA:GetFriendlyEffectiveScaleForCount(count)
-  local db = self.db and self.db.friendly
-  if not db then return 1 end
-  local baseScale = db.scale or 1
-
-  if not db.autoShrinkLargeGroups then
-    return baseScale
-  end
-
-  count = tonumber(count) or 1
-  if count > 5 then
-    return tonumber(db.largeGroupScale) or 0.85
-  end
-
-  return baseScale
-end
-
-function SFA:GetFriendlyEffectiveScale()
-  local count = 1
-
-  if self.GetSimulationEnabled and self:GetSimulationEnabled() then
-    local profile = self:GetSimulationProfile() or {}
-    count = #(profile.friendly or {})
-  else
-    if IsInRaid and GetNumGroupMembers then
-      local okRaid, inRaid = pcall(IsInRaid)
-      if okRaid and inRaid then
-        local ok, result = pcall(GetNumGroupMembers)
-        if ok and type(result) == "number" and result > 0 then
-          count = result
-        end
-      elseif GetNumSubgroupMembers then
-        local ok, result = pcall(GetNumSubgroupMembers)
-        if ok and type(result) == "number" then
-          count = math.max(1, result + 1)
-        end
-      end
-    elseif GetNumSubgroupMembers then
-      local ok, result = pcall(GetNumSubgroupMembers)
-      if ok and type(result) == "number" then
-        count = math.max(1, result + 1)
+      -- 0.25.10 fix: clearing our own type/macrotext back to nil (0.25.9)
+      -- was NOT enough to bring back Blizzard's native right-click menu --
+      -- live-tested (2026-09-01): with the group disabled, right-click did
+      -- neither the macro NOR the native menu. This means Blizzard decides
+      -- ONCE (likely at the frame's own setup, or the first time an addon
+      -- touches its attributes/click registration) whether to install its
+      -- own default click handling, and that decision doesn't get
+      -- reconsidered just because we later clear the attribute back to
+      -- nil. So for a frame we have NEVER touched yet this session, a
+      -- disabled group now skips it completely (no RegisterForClicks, no
+      -- SetAttribute at all) so Blizzard's default is never disturbed in
+      -- the first place. A frame already touched earlier this session
+      -- (e.g. the group was enabled at login, then disabled afterward)
+      -- still gets the clear-to-nil treatment as before -- the best we can
+      -- do without a reload at that point.
+      if enabled or frame.sfaNativeClickRegistered then
+        SFA_ApplyNativeClickToFrame(self, frame, frameName, clicks)
       end
     end
   end
-
-  return self:GetFriendlyEffectiveScaleForCount(count)
 end
 
-
-function SFA:IsFriendlyAuraAllowed(aura, group)
-  if group ~= "friendly" then
-    return true
-  end
-
-  local db = self.db and self.db.friendly
-  if not (db and db.showMyHotsOnly) then
-    return true
-  end
-
-  return aura ~= nil
+function SFA:ApplyNativeArenaClickBindings()
+  SFA_ApplyNativeClickBindingsForFrames(self, SFA_NATIVE_ARENA_FRAME_NAMES, "enemy")
 end
 
+-- Friendly roster unit tokens covered by the anonymous-frame scan below.
+local SFA_FRIENDLY_ANON_UNIT_TOKENS = (function()
+  local t = { player = true }
+  for i = 1, 4 do t["party" .. i] = true end
+  for i = 1, 40 do t["raid" .. i] = true end
+  return t
+end)()
 
-
-function SFA:GetFriendlyRaidUnits()
-  local units = {}
-  if not IsInRaid or not GetNumGroupMembers or not GetRaidRosterInfo then
-    return units
-  end
-
-  local okRaid, inRaid = pcall(IsInRaid)
-  if not okRaid or not inRaid then
-    return units
-  end
-
-  local okCount, count = pcall(GetNumGroupMembers)
-  if not okCount or type(count) ~= "number" or count <= 0 then
-    return units
-  end
-
-  local entries = {}
-  for i = 1, count do
-    local unit = "raid" .. i
-    local exists = false
-    if UnitExists then
-      local ok, result = pcall(UnitExists, unit)
-      exists = ok and result or false
+-- Recursively walks a Blizzard-owned container frame's descendants (bounded
+-- depth) looking for secure, protected Button-type children whose "unit"
+-- attribute is a friendly roster token, collecting them into `results`.
+-- Deliberately scoped to a specific known Blizzard container (PartyFrame /
+-- CompactRaidFrameContainer) rather than a global EnumerateFrames() sweep
+-- of the whole UI: this account also runs several other unit-frame addons
+-- (VuhDo, Grid2, HealBot, Gladius/GladiusEx) that create their own secure
+-- buttons bound to the same party/raid unit tokens, and a global sweep
+-- would start overwriting THEIR click-cast attributes too. Staying inside
+-- Blizzard's own native container makes that impossible.
+local function SFA_FindUnitButtonsUnder(container, unitTokenSet, results, depth)
+  if not container or depth > 6 then return end
+  local okChildren, children = pcall(function() return { container:GetChildren() } end)
+  if not okChildren then return end
+  for _, child in ipairs(children) do
+    local okAttr, unitAttr = pcall(child.GetAttribute, child, "unit")
+    if okAttr and type(unitAttr) == "string" and unitTokenSet[unitAttr] then
+      local okType, objType = pcall(child.GetObjectType, child)
+      local okProt, isProt = pcall(child.IsProtected, child)
+      if okType and objType == "Button" and okProt and isProt then
+        results[#results + 1] = child
+      end
     end
-    if exists then
-      local name, rank, subgroup = GetRaidRosterInfo(i)
-      entries[#entries + 1] = {
-        unit = unit,
-        subgroup = tonumber(subgroup) or 99,
-        name = name or unit,
-      }
-    end
+    SFA_FindUnitButtonsUnder(child, unitTokenSet, results, depth + 1)
   end
-
-  table.sort(entries, function(a, b)
-    if a.subgroup ~= b.subgroup then
-      return a.subgroup < b.subgroup
-    end
-    return tostring(a.name) < tostring(b.name)
-  end)
-
-  for _, entry in ipairs(entries) do
-    units[#units + 1] = entry.unit
-  end
-
-  return units
 end
 
-function SFA:GetFriendlyLayoutMetrics(visibleCount)
-  visibleCount = math.max(tonumber(visibleCount) or 0, 1)
-  if visibleCount <= 5 then
-    return 1, visibleCount
+-- 0.25.1 fix: Blizzard's modern unified party frame ("PartyFrame" -- the
+-- frame actually shown for a 5-man group on this account, confirmed via
+-- the friendly-frame scan/dump diagnostics, 2026-08-31) builds its member
+-- buttons from an anonymous object pool -- they have no stable global
+-- name, so SFA_NATIVE_FRIENDLY_FRAME_NAMES (which can only look things up
+-- by name) can never reach them. This is exactly the "shown vs visible"
+-- trap the arena investigation hit: CompactPartyFrameMember1-5 exist and
+-- get bindings applied fine, but IsVisible()=false on this account -- the
+-- real, clickable frame is one of these anonymous pool members instead.
+-- Since they have no name, walk PartyFrame's (and CompactRaidFrameContain-
+-- er's) descendants fresh each apply pass and bind by object reference --
+-- SecureHandlerSetFrameRef only needs a unique string key, not a name.
+local function SFA_ApplyNativeClickToAnonymousFriendlyFrames(self, clicks, enabled)
+  local results = {}
+  SFA_FindUnitButtonsUnder(_G["PartyFrame"], SFA_FRIENDLY_ANON_UNIT_TOKENS, results, 1)
+  SFA_FindUnitButtonsUnder(_G["CompactRaidFrameContainer"], SFA_FRIENDLY_ANON_UNIT_TOKENS, results, 1)
+
+  for _, frame in ipairs(results) do
+    local okAttr, unitAttr = pcall(frame.GetAttribute, frame, "unit")
+    local unit = (okAttr and type(unitAttr) == "string") and unitAttr or "unknown"
+    local refKey = "sfa-friendly-anon-" .. unit
+
+    -- 0.25.11: read-only hook, unconditional -- see SFA_EnsureClickHook.
+    SFA_EnsureClickHook(self, frame, refKey)
+
+    -- 0.25.10: same "never touch it in the first place when disabled"
+    -- rule as the named-frame path -- see SFA_ApplyNativeClickBindingsForFrames.
+    if enabled or frame.sfaNativeClickRegistered then
+      SFA_ApplyNativeClickToFrame(self, frame, refKey, clicks)
+    end
   end
-  local columns = math.ceil(visibleCount / 5)
-  return columns, 5
+  return #results
 end
 
-function SFA:GetDisplayedUnits(group)
-  if self.GetSimulationEnabled and self:GetSimulationEnabled() then
-    local scenario = (self.db and self.db.simulation and self.db.simulation.scenario) or "arena3v3"
-    if scenario == "arena3v3" then
-      if group == "friendly" then
-        return { "sfa_sim_friendly_1", "sfa_sim_friendly_2", "sfa_sim_friendly_3" }
-      else
-        return { "sfa_sim_enemy_1", "sfa_sim_enemy_2", "sfa_sim_enemy_3" }
-      end
-    elseif scenario == "dungeon" then
-      if group == "friendly" then
-        return { "sfa_sim_friendly_1", "sfa_sim_friendly_2", "sfa_sim_friendly_3", "sfa_sim_friendly_4", "sfa_sim_friendly_5" }
-      else
-        return { "sfa_sim_enemy_1" }
-      end
-    elseif scenario == "raid10" then
-      if group == "friendly" then
-        local units = {}
-        for i = 1, 10 do units[#units + 1] = "sfa_sim_friendly_" .. i end
-        return units
-      else
-        return { "sfa_sim_enemy_1" }
-      end
-    elseif scenario == "raid25" then
-      if group == "friendly" then
-        local units = {}
-        for i = 1, 25 do units[#units + 1] = "sfa_sim_friendly_" .. i end
-        return units
-      else
-        return { "sfa_sim_enemy_1" }
-      end
-    else
-      if group == "friendly" then
-        return { "sfa_sim_friendly_1" }
-      else
-        return { "sfa_sim_enemy_1" }
-      end
-    end
+-- 0.25.0 redesign, step 1: same mechanism, applied to Blizzard's native
+-- friendly frames (player/party/raid) using the "friendly" per-spec macro
+-- table. Additive and independent of this addon's own friendly-frame
+-- enable state, same as the arena/enemy version.
+function SFA:ApplyNativeFriendlyClickBindings()
+  SFA_ApplyNativeClickBindingsForFrames(self, SFA_NATIVE_FRIENDLY_FRAME_NAMES, "friendly")
+
+  local enabled = self:GetCharEnabled("friendly")
+  local clicks = self:GetSpecClickTable("friendly")
+  if type(clicks) ~= "table" then clicks = {} end
+  if not enabled then clicks = {} end
+  local n = SFA_ApplyNativeClickToAnonymousFriendlyFrames(self, clicks, enabled)
+  if n > 0 then
+    self:Log("native-click anon-friendly matches=%d", n)
   end
-
-  local units = {}
-
-  if group == "friendly" then
-    local raidUnits = self:GetFriendlyRaidUnits()
-    if #raidUnits > 0 then
-      return raidUnits
-    end
-
-    table.insert(units, "player")
-
-    local inGroup = false
-    if IsInGroup then
-      local ok, result = pcall(IsInGroup)
-      inGroup = ok and result or false
-    end
-
-    if inGroup then
-      for i = 1, 4 do
-        local unit = "party" .. i
-        local exists = false
-        if UnitExists then
-          local ok, result = pcall(UnitExists, unit)
-          exists = ok and result or false
-        end
-        if exists then
-          table.insert(units, unit)
-        end
-      end
-    end
-
-    return units
-  end
-
-  local inArena = false
-  if IsActiveBattlefieldArena then
-    local ok, result = pcall(IsActiveBattlefieldArena)
-    inArena = ok and result or false
-  end
-
-  if inArena then
-    local count = self:GetArenaEnemySlotCount()
-    local arenaUnits = {}
-    for i = 1, count do
-      arenaUnits[#arenaUnits + 1] = "arena" .. i
-    end
-    return arenaUnits
-  else
-    local targetExists = false
-    if UnitExists then
-      local ok, result = pcall(UnitExists, "target")
-      targetExists = ok and result or false
-    end
-    if targetExists then
-      local canAttack = false
-      if UnitCanAttack then
-        local ok, result = pcall(UnitCanAttack, "player", "target")
-        canAttack = ok and result or false
-      end
-      local isFriend = false
-      if UnitIsFriend then
-        local ok, result = pcall(UnitIsFriend, "player", "target")
-        isFriend = ok and result or false
-      end
-      -- Show the single-target slot for either an attackable enemy or a
-      -- friendly unit. Which one it is gets resolved per-frame via
-      -- SFA:IsFriendlyOverrideTarget so appearance/clicks match the type.
-      if canAttack or isFriend then
-        table.insert(units, "target")
-      end
-    end
-  end
-
-  return units
-end
-
--- Returns true when the "enemy" single-target slot is currently occupied by
--- a friendly unit (i.e. the player targeted a friendly while not in arena).
--- Only the "target" unit token can ever be a friendly override; arena slots
--- are always genuine enemies.
-function SFA:IsFriendlyOverrideTarget(unit)
-  if unit ~= "target" then return false end
-
-  local exists = false
-  if UnitExists then
-    local ok, result = pcall(UnitExists, unit)
-    exists = ok and result or false
-  end
-  if not exists then return false end
-
-  local canAttack = false
-  if UnitCanAttack then
-    local ok, result = pcall(UnitCanAttack, "player", unit)
-    canAttack = ok and result or false
-  end
-  if canAttack then return false end
-
-  local isFriend = false
-  if UnitIsFriend then
-    local ok, result = pcall(UnitIsFriend, "player", unit)
-    isFriend = ok and result or false
-  end
-  return isFriend
-end
-
-
-local function GetTargetHighlightColor(mode)
-  if mode == "none" then
-    return nil
-  elseif mode == "soft" then
-    return 1, 0.40, 0.40, 0.90
-  elseif mode == "subtle" then
-    return 0.80, 0.30, 0.30, 0.70
-  end
-  return 0.90, 0.35, 0.35, 0.85
-end
-
--- Green counterpart used when the enemy single-target slot is showing a
--- friendly unit (see SFA:IsFriendlyOverrideTarget). Mirrors the same
--- targetColor intensity setting so the user's existing preference still
--- controls the strength of the highlight.
-local function GetFriendlyTargetHighlightColor(mode)
-  if mode == "none" then
-    return nil
-  elseif mode == "soft" then
-    return 0.40, 1, 0.40, 0.90
-  elseif mode == "subtle" then
-    return 0.30, 0.80, 0.30, 0.70
-  end
-  return 0.35, 0.90, 0.35, 0.85
 end
 
 function SFA:GetSpellNameSafe(spellID)
@@ -1954,1126 +1941,22 @@ function SFA:GetSpellNameSafe(spellID)
   return nil
 end
 
-local function FillAuraIcon(icon, texture, borderR, borderG, borderB, spellID)
-  icon.spellID = spellID
-  icon.tex:SetTexture(texture)
-  icon.border:SetVertexColor(borderR or 1, borderG or 0.82, borderB or 0)
-  icon:Show()
+-- Edge-triggered persisted log: only writes when a slot-1 aura read flips
+-- between working and blocked for a given context+unit, instead of every
+-- refresh tick. Always active (not gated by /sfaauradebug) so a repro run
+-- doesn't require remembering to toggle chat debug first -- just
+-- /sfaclearlog, reproduce, /reload or logout, then read the SavedVariable.
+-- 0.25.0 redesign: this addon no longer renders its own unit frames, so
+-- there's nothing left to lay out or hide/show here -- just reapply the
+-- supplemental click-cast on whichever native Blizzard frames are
+-- relevant. Kept as one small function (rather than inlining every call
+-- site) so all the various roster/spec/target/combat events below can
+-- funnel through a single place.
+function SFA:ApplyAllNativeClickBindings()
+  self:ApplyNativeArenaClickBindings()
+  self:ApplyNativeFriendlyClickBindings()
+  self:ApplyNativeTargetFocusClickBindings()
 end
-
-
-function SFA:IsBlacklistedBuff(spellID)
-  if not (spellID and self.db and self.db.buffBlacklist) then
-    return false
-  end
-  local ok, result = pcall(function()
-    local id = tonumber(spellID)
-    if not id then return false end
-    return self.db.buffBlacklist[id] == true
-  end)
-  if ok then
-    return result and true or false
-  end
-  return false
-end
-
-function SFA:AddBuffToBlacklist(spellID)
-  local ok, id = pcall(function()
-    return tonumber(spellID)
-  end)
-  if not ok or not id then return end
-  self.db.buffBlacklist = self.db.buffBlacklist or {}
-  if self.db.buffBlacklist[id] then
-    Print("Spell ID already blacklisted: " .. id)
-    return
-  end
-  self.db.buffBlacklist[id] = true
-  local spellName = self:GetSpellNameSafe(id)
-  Print(spellName and ("Added buff to blacklist: " .. id .. " (" .. spellName .. ")") or ("Added buff to blacklist: " .. id))
-  if self.RefreshAll then self:RefreshAll() end
-  if self.RefreshBlacklistUI then self:RefreshBlacklistUI() end
-end
-
-function SFA:RemoveBuffFromBlacklist(spellID)
-  local ok, id = pcall(function()
-    return tonumber(spellID)
-  end)
-  if not ok or not id or not self.db or not self.db.buffBlacklist then return end
-  self.db.buffBlacklist[id] = nil
-  local spellName = self:GetSpellNameSafe(id)
-  Print(spellName and ("Removed buff from blacklist: " .. id .. " (" .. spellName .. ")") or ("Removed buff from blacklist: " .. id))
-  if self.RefreshAll then self:RefreshAll() end
-  if self.RefreshBlacklistUI then self:RefreshBlacklistUI() end
-end
-
-
-function SFA:UpdateAuraIcons(frame, group)
-  local cfg = self.db[group]
-  for _, icon in ipairs(frame.buffIcons) do
-    icon.spellID = nil
-    icon:Hide()
-  end
-  for _, icon in ipairs(frame.debuffIcons) do
-    icon.spellID = nil
-    icon:Hide()
-  end
-
-  local function addBuff(texture, spellID)
-    local idx = 1
-    while frame.buffIcons[idx] and frame.buffIcons[idx]:IsShown() do
-      idx = idx + 1
-    end
-    local icon = frame.buffIcons[idx]
-    if not icon then return false end
-    icon:ClearAllPoints()
-    if idx == 1 then
-      icon:SetPoint("RIGHT", frame, "RIGHT", -4, 0)
-    else
-      icon:SetPoint("RIGHT", frame.buffIcons[idx - 1], "LEFT", -2, 0)
-    end
-    FillAuraIcon(icon, texture, 0.2, 0.85, 0.35, spellID)
-    return true
-  end
-
-  local function addDebuff(texture, spellID)
-    local idx = 1
-    while frame.debuffIcons[idx] and frame.debuffIcons[idx]:IsShown() do
-      idx = idx + 1
-    end
-    local icon = frame.debuffIcons[idx]
-    if not icon then return false end
-    icon:ClearAllPoints()
-    if idx == 1 then
-      icon:SetPoint("TOPRIGHT", frame, "BOTTOMRIGHT", -2, -2)
-    else
-      icon:SetPoint("RIGHT", frame.debuffIcons[idx - 1], "LEFT", -2, 0)
-    end
-    FillAuraIcon(icon, texture, 0.9, 0.15, 0.15, spellID)
-    return true
-  end
-
-  local sim = frame.simulationData or self:GetSimulationData(frame.unit)
-  if sim then
-    if group == "friendly" then
-      for _, spellID in ipairs(sim.buffSpellIDs or {}) do
-        if not self:IsBlacklistedBuff(spellID) then
-          if not addBuff(SpellTextureSafe(spellID), spellID) then break end
-        end
-      end
-    end
-    if cfg.showDebuffs then
-      for _, spellID in ipairs(sim.debuffSpellIDs or {}) do
-        if not self:IsBlacklistedBuff(spellID) then
-          if not addDebuff(SpellTextureSafe(spellID), spellID) then break end
-        end
-      end
-    end
-    return
-  end
-
-  if not UnitExists(frame.unit) or not C_UnitAuras or not C_UnitAuras.GetAuraDataByIndex then
-    return
-  end
-
-  if group == "friendly" then
-    local helpfulFilter = "HELPFUL"
-    if self.db and self.db.friendly and self.db.friendly.showMyHotsOnly then
-      helpfulFilter = "HELPFUL|PLAYER"
-    end
-
-    for i = 1, 16 do
-      local ok, aura = pcall(C_UnitAuras.GetAuraDataByIndex, frame.unit, i, helpfulFilter)
-      if not ok or not aura then break end
-      local spellID = aura.spellId or aura.spellID
-      local texture = aura.icon or aura.iconFileID
-      if texture and self:IsFriendlyAuraAllowed(aura, group) and not self:IsBlacklistedBuff(spellID) then
-        if not addBuff(texture, spellID) then break end
-      end
-    end
-  end
-
-  if cfg.showDebuffs then
-    for i = 1, 16 do
-      local ok, aura = pcall(C_UnitAuras.GetAuraDataByIndex, frame.unit, i, "HARMFUL")
-      if not ok or not aura then break end
-      local spellID = aura.spellId or aura.spellID
-      local texture = aura.icon or aura.iconFileID
-      if texture and not self:IsBlacklistedBuff(spellID) then
-        if not addDebuff(texture, spellID) then break end
-      end
-    end
-  end
-end
-
-
-
-
-function SFA:UpdateTargetXMark(frame, group)
-  if frame and frame.targetXMark then frame.targetXMark:Hide() end
-end
-
-function SFA:UpdateTargetHighlight(frame, group)
-  if group ~= "enemy" or not frame.unit then
-    frame.targetBorder:Hide()
-    return
-  end
-
-  local shouldHighlight = UnitExists("target") and UnitIsUnit(frame.unit, "target")
-  if shouldHighlight then
-    local mode = (self.db.enemy and self.db.enemy.targetColor) or "medium"
-    local r, g, b, a
-    if self:IsFriendlyOverrideTarget(frame.unit) then
-      r, g, b, a = GetFriendlyTargetHighlightColor(mode)
-    else
-      r, g, b, a = GetTargetHighlightColor(mode)
-    end
-    if not r then
-      frame.targetBorder:Hide()
-      return
-    end
-    frame.targetBorder.top:SetColorTexture(r, g, b, a)
-    frame.targetBorder.bottom:SetColorTexture(r, g, b, a)
-    frame.targetBorder.left:SetColorTexture(r, g, b, a)
-    frame.targetBorder.right:SetColorTexture(r, g, b, a)
-    frame.targetBorder:Show()
-  else
-    frame.targetBorder:Hide()
-  end
-end
-
-
-
-
-
-
-
-function SFA:UpdateFrameDataOnly(frame, group)
-  local unit = frame.unit
-  local displayGroup = group
-  if group == "enemy" and self:IsFriendlyOverrideTarget(unit) then
-    displayGroup = "friendly"
-  end
-  local sim = frame.simulationData or self:GetSimulationData(unit)
-
-  if sim then
-    frame.health:SetMinMaxValues(0, 100)
-    frame.health:SetValue(math.floor((sim.health or 1) * 100 + 0.5))
-    frame.name:SetText(sim.name or unit)
-
-    local r, g, b = 0.1, 0.8, 0.2
-    if group == "enemy" and self.db.enemy.classColor and sim.class and RAID_CLASS_COLORS[sim.class] then
-      local c = RAID_CLASS_COLORS[sim.class]
-      r, g, b = c.r, c.g, c.b
-    elseif group == "friendly" and sim.class and RAID_CLASS_COLORS[sim.class] then
-      local c = RAID_CLASS_COLORS[sim.class]
-      r, g, b = c.r * 0.7 + 0.1, c.g * 0.7 + 0.1, c.b * 0.7 + 0.1
-    end
-    frame.health:SetStatusBarColor(r, g, b, 0.58)
-    frame.value:SetText(sim.value or "")
-
-    frame.role:SetText("")
-    if frame.roleIcon then frame.roleIcon:Hide() end
-    if sim.healer then
-      frame.role:SetText("+")
-      frame.role:SetTextColor(1, 0.12, 0.12, 1)
-      frame.role:Show()
-    elseif sim.tank then
-      if frame.roleIcon then
-        frame.roleIcon:SetTexture("Interface\\Icons\\INV_Shield_06")
-        frame.roleIcon:SetVertexColor(1, 1, 1, 1)
-        frame.roleIcon:Show()
-      end
-      frame.role:Hide()
-    else
-      frame.role:Hide()
-    end
-
-    self:UpdateAuraIcons(frame, group)
-    self:UpdateTargetXMark(frame, group)
-    self:UpdateTargetHighlight(frame, group)
-    return
-  end
-
-  local exists = unit and UnitExists(unit)
-  local reservedArenaEnemy = self:IsReservedArenaEnemySlot(group, unit)
-
-  if not exists and not reservedArenaEnemy then
-    return
-  end
-
-  if not exists and reservedArenaEnemy then
-    frame.health:SetMinMaxValues(0, 100)
-    frame.health:SetValue(0)
-    frame.name:SetText(frame.lastKnownName or ("Enemy " .. tostring(unit):gsub("arena", "")))
-    frame.health:SetStatusBarColor(0.35, 0.35, 0.35, 0.58)
-    frame:SetAlpha(1)
-    frame.value:SetText("")
-    frame.role:SetText("")
-    if frame.roleIcon then frame.roleIcon:Hide() end
-    self:UpdateAuraIcons(frame, group)
-    self:UpdateTargetXMark(frame, group)
-    self:UpdateTargetHighlight(frame, group)
-    return
-  end
-
-  local current = UnitHealth(unit)
-  local maxHealth = UnitHealthMax(unit)
-  frame.health:SetMinMaxValues(0, maxHealth or 1)
-  frame.health:SetValue(current or 0)
-
-  local name = UnitName(unit) or unit
-  frame.lastKnownName = name
-  local _, classFile = UnitClass(unit)
-  frame.name:SetText(name)
-
-  local r, g, b = 0.1, 0.8, 0.2
-  local enemyClassColor = displayGroup == "enemy" and self.db.enemy.classColor and SFA_SafeClassColor(classFile)
-  if enemyClassColor then
-    r, g, b = enemyClassColor.r, enemyClassColor.g, enemyClassColor.b
-  elseif displayGroup == "friendly" then
-    local friendlyClassColor = self.db.friendly and self.db.friendly.classColor and SFA_SafeClassColor(classFile)
-    if friendlyClassColor then
-      r, g, b = friendlyClassColor.r, friendlyClassColor.g, friendlyClassColor.b
-    else
-      r, g, b = 0.1, 0.75, 0.25
-    end
-  end
-
-  if not UnitIsConnected(unit) or UnitIsDeadOrGhost(unit) then
-    r, g, b = 0.35, 0.35, 0.35
-  end
-  frame.health:SetStatusBarColor(r, g, b, 0.58)
-
-  if not UnitIsConnected(unit) then
-    frame.value:SetText("OFF")
-  elseif UnitIsDeadOrGhost(unit) then
-    frame.value:SetText("DEAD")
-  else
-    frame.value:SetText("")
-  end
-
-  local roleVisual = nil
-  if (displayGroup == "enemy" and self.db.enemy.healerMarker) or displayGroup == "friendly" then
-    roleVisual = self:GetUnitRoleVisual(unit, frame)
-  end
-  frame.role:SetText("")
-  if frame.roleIcon then frame.roleIcon:Hide() end
-  if roleVisual == "HEALER" then
-    frame.role:SetText("+")
-    frame.role:SetTextColor(1, 0.12, 0.12, 1)
-    frame.role:Show()
-  elseif roleVisual == "TANK" then
-    if frame.roleIcon then
-      frame.roleIcon:SetTexture("Interface\\Icons\\INV_Shield_06")
-      frame.roleIcon:SetVertexColor(1, 1, 1, 1)
-      frame.roleIcon:Show()
-    end
-    frame.role:Hide()
-  else
-    frame.role:Hide()
-  end
-
-  self:UpdateAuraIcons(frame, displayGroup)
-  self:UpdateTargetXMark(frame, group)
-  self:UpdateTargetHighlight(frame, group)
-  frame:SetAlpha(1)
-end
-
-function SFA:UpdateFrameVisual(frame, group)
-  local unit = frame.unit
-  -- When the enemy single-target slot is showing a friendly unit, treat it
-  -- like a friendly frame for coloring/role/aura purposes (border handling
-  -- stays separate, see UpdateTargetHighlight).
-  local displayGroup = group
-  if group == "enemy" and self:IsFriendlyOverrideTarget(unit) then
-    displayGroup = "friendly"
-  end
-
-  local sim = frame.simulationData or self:GetSimulationData(unit)
-  if sim then
-    if not sim then
-      frame.targetBorder:Hide()
-      frame:Hide()
-      return
-    end
-
-    frame:Show()
-    frame.health:SetMinMaxValues(0, 100)
-    frame.health:SetValue(math.floor((sim.health or 1) * 100 + 0.5))
-    frame.name:SetText(sim.name or unit)
-
-    local r, g, b = 0.1, 0.8, 0.2
-    if group == "enemy" and self.db.enemy.classColor and sim.class and RAID_CLASS_COLORS[sim.class] then
-      local c = RAID_CLASS_COLORS[sim.class]
-      r, g, b = c.r, c.g, c.b
-    elseif group == "friendly" and sim.class and RAID_CLASS_COLORS[sim.class] then
-      local c = RAID_CLASS_COLORS[sim.class]
-      r, g, b = c.r * 0.7 + 0.1, c.g * 0.7 + 0.1, c.b * 0.7 + 0.1
-    end
-    frame.health:SetStatusBarColor(r, g, b, 0.58)
-    frame.value:SetText(sim.value or "")
-    frame.role:SetText("")
-    if frame.roleIcon then frame.roleIcon:Hide() end
-    if sim.healer then
-      frame.role:SetText("+")
-      frame.role:SetTextColor(1, 0.12, 0.12, 1)
-      frame.role:Show()
-    elseif sim.tank then
-      if frame.roleIcon then
-        frame.roleIcon:SetTexture("Interface\\Icons\\INV_Shield_06")
-        frame.roleIcon:SetVertexColor(1, 1, 1, 1)
-        frame.roleIcon:Show()
-      end
-      frame.role:Hide()
-    else
-      frame.role:Hide()
-    end
-
-    self:UpdateAuraIcons(frame, group)
-    self:UpdateTargetXMark(frame, group)
-
-    if group == "enemy" and sim.target then
-      local r2, g2, b2, a2 = GetTargetHighlightColor((self.db.enemy and self.db.enemy.targetColor) or "medium")
-      if r2 then
-        frame.targetBorder.top:SetColorTexture(r2, g2, b2, a2)
-        frame.targetBorder.bottom:SetColorTexture(r2, g2, b2, a2)
-        frame.targetBorder.left:SetColorTexture(r2, g2, b2, a2)
-        frame.targetBorder.right:SetColorTexture(r2, g2, b2, a2)
-        frame.targetBorder:Show()
-      else
-        frame.targetBorder:Hide()
-      end
-    else
-      frame.targetBorder:Hide()
-    end
-    return
-  end
-
-  local exists = unit and UnitExists(unit)
-  local reservedArenaEnemy = self:IsReservedArenaEnemySlot(group, unit)
-
-  if not exists and not reservedArenaEnemy then
-    frame.targetBorder:Hide()
-    frame:Hide()
-    return
-  end
-
-  frame:Show()
-
-  if not exists and reservedArenaEnemy then
-    frame.health:SetMinMaxValues(0, 100)
-    frame.health:SetValue(0)
-    frame.name:SetText(frame.lastKnownName or ("Enemy " .. tostring(unit):gsub("arena", "")))
-    frame.health:SetStatusBarColor(0.35, 0.35, 0.35, 0.58)
-    frame.value:SetText("")
-    frame.role:SetText("")
-    if frame.roleIcon then frame.roleIcon:Hide() end
-    self:UpdateAuraIcons(frame, group)
-    self:UpdateTargetXMark(frame, group)
-    self:UpdateTargetHighlight(frame, group)
-    return
-  end
-
-  local current = UnitHealth(unit)
-  local maxHealth = UnitHealthMax(unit)
-  frame.health:SetMinMaxValues(0, maxHealth or 1)
-  frame.health:SetValue(current or 0)
-
-  local name = UnitName(unit) or unit
-  local _, classFile = UnitClass(unit)
-  frame.name:SetText(name)
-
-  local r, g, b = 0.1, 0.8, 0.2
-  local enemyClassColor = displayGroup == "enemy" and self.db.enemy.classColor and SFA_SafeClassColor(classFile)
-  if enemyClassColor then
-    r, g, b = enemyClassColor.r, enemyClassColor.g, enemyClassColor.b
-  elseif displayGroup == "friendly" then
-    local friendlyClassColor = self.db.friendly and self.db.friendly.classColor and SFA_SafeClassColor(classFile)
-    if friendlyClassColor then
-      r, g, b = friendlyClassColor.r, friendlyClassColor.g, friendlyClassColor.b
-    else
-      r, g, b = 0.1, 0.75, 0.25
-    end
-  end
-
-  if not UnitIsConnected(unit) or UnitIsDeadOrGhost(unit) then
-    r, g, b = 0.35, 0.35, 0.35
-  end
-  frame.health:SetStatusBarColor(r, g, b, 0.58)
-
-  if not UnitIsConnected(unit) then
-    frame.value:SetText("OFF")
-  elseif UnitIsDeadOrGhost(unit) then
-    frame.value:SetText("DEAD")
-  else
-    frame.value:SetText("")
-  end
-
-  local roleVisual = nil
-  if (displayGroup == "enemy" and self.db.enemy.healerMarker) or displayGroup == "friendly" then
-    roleVisual = self:GetUnitRoleVisual(unit, frame)
-  end
-  frame.role:SetText("")
-  if frame.roleIcon then frame.roleIcon:Hide() end
-  if roleVisual == "HEALER" then
-    frame.role:SetText("+")
-    frame.role:SetTextColor(1, 0.12, 0.12, 1)
-    frame.role:Show()
-  elseif roleVisual == "TANK" then
-    if frame.roleIcon then
-      frame.roleIcon:SetTexture("Interface\\Icons\\INV_Shield_06")
-      frame.roleIcon:SetVertexColor(1, 1, 1, 1)
-      frame.roleIcon:Show()
-    end
-    frame.role:Hide()
-  else
-    frame.role:Hide()
-  end
-
-  self:UpdateAuraIcons(frame, displayGroup)
-  self:UpdateTargetXMark(frame, group)
-  self:UpdateTargetHighlight(frame, group)
-end
-
-
-
-
-
-
-
-function SFA:ShouldThrottleFriendlyRefresh()
-  if not self or not self.db or not self.db.friendly then
-    return false
-  end
-
-  if self:IsSimulationEnabled() then
-    return false
-  end
-
-  local units = self:GetDisplayedUnits("friendly")
-  return #units > 10
-end
-
-function SFA:CanRunFriendlyRefreshNow()
-  if not self:ShouldThrottleFriendlyRefresh() then
-    return true
-  end
-
-  self.session = self.session or {}
-  local now = GetTime and GetTime() or 0
-  local last = self.session.lastFriendlyRefresh or 0
-  local minInterval = 0.18
-
-  if (now - last) >= minInterval then
-    self.session.lastFriendlyRefresh = now
-    return true
-  end
-
-  return false
-end
-
-function SFA:GetFriendlyVisibleUnitCount()
-  local units = self:GetDisplayedUnits("friendly")
-  return #units
-end
-
-function SFA:FlushPendingStructuralUpdates()
-  local hadPending = self.pendingLayout or self.pendingVisibility or self.pendingRefresh
-  self.pendingLayout = false
-  self.pendingVisibility = false
-  self.pendingRefresh = false
-  if not hadPending then return end
-  if not self.db then return end
-  self:RefreshGroup("friendly")
-  self:RefreshGroup("enemy")
-  self:RefreshEnemyNameplateOverlays()
-end
-
-
-function SFA:RefreshGroup(group)
-  local cfg = self.db[group]
-  local inCombat = InCombatLockdown()
-
-  if not self:GetCharEnabled(group) then
-    if inCombat then
-      self.pendingVisibility = true
-      return
-    end
-    if self.headers[group] then self.headers[group]:Hide() end
-    for _, frame in ipairs(self.frames[group]) do
-      frame.simulationData = nil
-      frame.unit = nil
-      frame:SetAttribute("unit", nil)
-      frame:SetAlpha(1)
-      frame:Hide()
-    end
-    return
-  end
-
-  if self:IsSimulationEnabled() then
-    local header = self.headers[group]
-    local profile = self:GetSimulationProfile() or {}
-    local entries = (profile[group] or {})
-
-    if inCombat then
-      self.pendingVisibility = true
-      for i, frame in ipairs(self.frames[group]) do
-        local sim = entries[i]
-        frame.simulationData = sim
-        frame.unit = nil
-        if sim then
-          self:UpdateFrameDataOnly(frame, group)
-        end
-      end
-      return
-    end
-
-    if header then
-      header:SetScale(group == "friendly" and self:GetFriendlyEffectiveScaleForCount(#entries) or cfg.scale)
-      header:SetShown(#entries > 0)
-      if header.label then header.label:SetShown(not self.db.hideHeaders) end
-    end
-
-    for i, frame in ipairs(self.frames[group]) do
-      local sim = entries[i]
-      frame.unit = nil
-      frame.simulationData = sim
-      if sim then
-        self:ApplyClickBindings(frame, group)
-        self:UpdateFrameVisual(frame, group)
-      else
-        frame:SetAlpha(1)
-        frame:Hide()
-      end
-    end
-    self:ApplyLayout(group)
-    return
-  end
-
-  local header = self.headers[group]
-  local units = self:GetDisplayedUnits(group)
-  local activeCount = #units
-
-  if inCombat then
-    self.pendingVisibility = true
-    -- only update data for frames that already have assigned units or reserved arena slots
-    for i, frame in ipairs(self.frames[group]) do
-      local keepUnit = frame.unit
-      local nextUnit = units[i]
-      if keepUnit then
-        self:UpdateFrameDataOnly(frame, group)
-      elseif nextUnit and self.IsReservedArenaEnemySlot and self:IsReservedArenaEnemySlot(group, nextUnit) then
-        frame.unit = nextUnit
-        self:UpdateFrameDataOnly(frame, group)
-      end
-    end
-    return
-  end
-
-  for _, frame in ipairs(self.frames[group]) do
-    frame.simulationData = nil
-  end
-
-  if header then
-    header:SetScale(group == "friendly" and self:GetFriendlyEffectiveScaleForCount(activeCount) or cfg.scale)
-    header:SetShown(activeCount > 0)
-    if header.label then header.label:SetShown(not self.db.hideHeaders) end
-  end
-
-  for i, frame in ipairs(self.frames[group]) do
-    local unit = units[i]
-    frame.unit = unit
-    if unit then
-      self:ApplyClickBindings(frame, group)
-      self:UpdateFrameVisual(frame, group)
-    else
-      frame.unit = nil
-      frame:SetAttribute("unit", nil)
-      frame:SetAlpha(1)
-      frame:Hide()
-    end
-  end
-
-  self:ApplyLayout(group)
-end
-
-
-function SFA:QueueRefresh(delay)
-  if self.pendingRefresh then return end
-  self.pendingRefresh = true
-
-  local actualDelay = delay or 0.08
-  if self:ShouldThrottleFriendlyRefresh() then
-    actualDelay = math.max(actualDelay, 0.15)
-  end
-
-  C_Timer.After(actualDelay, function()
-    if not self.db then
-      self.pendingRefresh = false
-      return
-    end
-
-    if InCombatLockdown() then
-      self.pendingLayout = true
-      self.pendingVisibility = true
-      self.pendingRefresh = false
-      return
-    end
-
-    self.pendingRefresh = false
-
-    if self:CanRunFriendlyRefreshNow() then
-      self:RefreshGroup("friendly")
-    else
-      self.pendingRefresh = true
-      C_Timer.After(0.10, function()
-        if SFA and SFA.db then
-          SFA.pendingRefresh = false
-          if not InCombatLockdown() then
-            SFA:RefreshGroup("friendly")
-          else
-            SFA.pendingLayout = true
-            SFA.pendingVisibility = true
-          end
-        end
-      end)
-    end
-
-    self:RefreshGroup("enemy")
-  end)
-end
-
-function SFA:QueueArenaRefreshes()
-  self:QueueRefresh(0.05)
-  C_Timer.After(0.20, function()
-    if SFA and SFA.db then SFA:QueueRefresh(0.05) end
-  end)
-  C_Timer.After(0.60, function()
-    if SFA and SFA.db then SFA:QueueRefresh(0.05) end
-  end)
-  C_Timer.After(1.20, function()
-    if SFA and SFA.db then SFA:QueueRefresh(0.05) end
-  end)
-  C_Timer.After(2.50, function()
-    if SFA and SFA.db then SFA:QueueRefresh(0.05) end
-  end)
-end
-
-local function StartMoving(header, group)
-  if SFA.db.locked or InCombatLockdown() then return end
-  if IsShiftKeyDown and not IsShiftKeyDown() then return end
-  header:StartMoving()
-  header.isMoving = true
-  header.group = group
-end
-
-
-local function StopMoving(header)
-  if not header.isMoving then return end
-  header:StopMovingOrSizing()
-  header.isMoving = false
-
-  local p, _, rp, x, y = header:GetPoint(1)
-  local cfg = SFA.db[header.group]
-  local key = SFA:GetCurrentLayoutContextKey(header.group)
-
-  local point = {
-    anchor = p,
-    relativeTo = "UIParent",
-    relativePoint = rp,
-    x = math.floor(x + 0.5),
-    y = math.floor(y + 0.5),
-  }
-
-  SFA:SetLastContextPoint(header.group, key, point)
-
-  cfg.point = cfg.point or {}
-  cfg.point.anchor = point.anchor
-  cfg.point.relativeTo = point.relativeTo
-  cfg.point.relativePoint = point.relativePoint
-  cfg.point.x = point.x
-  cfg.point.y = point.y
-
-  if header.group == "friendly" then
-    cfg.scenarioPoints = cfg.scenarioPoints or {}
-    cfg.scenarioPoints[key] = {
-      anchor = point.anchor,
-      relativeTo = "UIParent",
-      relativePoint = point.relativePoint,
-      x = point.x,
-      y = point.y,
-    }
-  end
-
-  SFA:QueueRefresh()
-  if SFA.RefreshOptionsPanel then SFA:RefreshOptionsPanel() end
-end
-
-function SFA:CreateUnitFrame(parent, unit, group, index)
-  local cfg = self.db[group]
-  local frame = CreateFrame("Button", addonName .. group .. index, parent, "SecureUnitButtonTemplate")
-  frame.unit = unit
-  frame:SetAttribute("unit", unit)
-  frame:RegisterForClicks("AnyUp")
-  frame:SetSize(cfg.width, cfg.height)
-  if index == 1 then
-    frame:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, 0)
-  else
-    frame:SetPoint("TOPLEFT", self.frames[group][index - 1], "BOTTOMLEFT", 0, -cfg.spacing)
-  end
-  SetBackdropBasic(frame)
-  frame:SetScript("OnMouseDown", function(self, button)
-    if not SFA.db.locked and button == "LeftButton" and IsShiftKeyDown and IsShiftKeyDown() then
-      StartMoving(parent, group)
-    end
-  end)
-  frame:SetScript("OnMouseUp", function(self, button)
-    if parent and parent.isMoving then
-      StopMoving(parent)
-    end
-  end)
-  frame:SetFrameStrata("MEDIUM")
-
-  frame.targetBorder = CreateFrame("Frame", nil, frame)
-  frame.targetBorder:SetAllPoints(frame)
-  frame.targetBorder:SetFrameLevel(frame:GetFrameLevel() + 8)
-
-  frame.targetBorder.top = frame.targetBorder:CreateTexture(nil, "OVERLAY")
-  frame.targetBorder.top:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
-  frame.targetBorder.top:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, 0)
-  frame.targetBorder.top:SetHeight(1)
-
-  frame.targetBorder.bottom = frame.targetBorder:CreateTexture(nil, "OVERLAY")
-  frame.targetBorder.bottom:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 0, 0)
-  frame.targetBorder.bottom:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
-  frame.targetBorder.bottom:SetHeight(1)
-
-  frame.targetBorder.left = frame.targetBorder:CreateTexture(nil, "OVERLAY")
-  frame.targetBorder.left:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
-  frame.targetBorder.left:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 0, 0)
-  frame.targetBorder.left:SetWidth(1)
-
-  frame.targetBorder.right = frame.targetBorder:CreateTexture(nil, "OVERLAY")
-  frame.targetBorder.right:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, 0)
-  frame.targetBorder.right:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
-  frame.targetBorder.right:SetWidth(1)
-
-  frame.targetBorder:Hide()
-
-  frame.health = CreateFrame("StatusBar", nil, frame)
-  frame.health:SetStatusBarTexture("Interface/TargetingFrame/UI-StatusBar")
-  frame.health:SetPoint("TOPLEFT", 2, -2)
-  frame.health:SetPoint("BOTTOMRIGHT", -2, 2)
-  frame.health:SetAlpha(0.58)
-
-  frame.bg = frame.health:CreateTexture(nil, "BACKGROUND")
-  frame.bg:SetAllPoints()
-  frame.bg:SetColorTexture(0.08, 0.08, 0.08, 0.10)
-
-  frame.specIcon = frame:CreateTexture(nil, "OVERLAY")
-  frame.specIcon:SetSize(18, 18)
-  if frame.name then
-    frame.specIcon:SetPoint("BOTTOM", frame.name, "TOP", 0, 6)
-  else
-    frame.specIcon:SetPoint("BOTTOM", frame, "TOP", 0, 4)
-  end
-  frame.specIcon:Hide()
-
-  frame.targetXMark = frame:CreateFontString(nil, "OVERLAY")
-  frame.targetXMark:SetFont("Fonts\\FRIZQT__.TTF", 22, "OUTLINE")
-  if frame.name then
-    frame.targetXMark:SetPoint("BOTTOMLEFT", frame.name, "TOPLEFT", 0, 2)
-  else
-    frame.targetXMark:SetPoint("BOTTOMLEFT", frame, "TOPLEFT", 2, 2)
-  end
-  frame.targetXMark:SetText("X")
-  frame.targetXMark:SetTextColor(1, 0.1, 0.1, 1)
-  frame.targetXMark:Hide()
-
-  frame.name = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  frame.name:SetPoint("LEFT", frame, "LEFT", 6, 0)
-  frame.name:SetJustifyH("LEFT")
-  frame.name:SetWidth(cfg.width - 42)
-
-  frame.value = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  frame.value:SetPoint("RIGHT", frame, "RIGHT", -6, 0)
-  frame.value:SetJustifyH("RIGHT")
-
-  frame.roleIcon = frame:CreateTexture(nil, "OVERLAY")
-frame.roleIcon:SetSize(14,14)
-frame.roleIcon:SetPoint("CENTER", frame.health or frame, "CENTER", 0, 0)
-frame.roleIcon:Hide()
-
-frame.role = frame:CreateFontString(nil, "OVERLAY")
-  frame.role:SetFont("Fonts\\FRIZQT__.TTF", 32, "THICKOUTLINE")
-  frame.role:ClearAllPoints()
-  frame.role:SetPoint("CENTER", frame.health or frame, "CENTER", 0, 0)
-
-  frame.buffIcons = {}
-  frame.debuffIcons = {}
-  for i = 1, 4 do
-    frame.buffIcons[i] = CreateAuraIcon(frame, i, "bar")
-    frame.debuffIcons[i] = CreateAuraIcon(frame, i, "under")
-  end
-
-  frame:SetScript("OnEnter", function(self)
-    if not self.unit then return end
-    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-    GameTooltip:SetUnit(self.unit)
-    GameTooltip:Show()
-  end)
-  frame:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
-  self:ApplyClickBindings(frame, group)
-  frame:Hide()
-  return frame
-end
-
-function SFA:CreateHeader(group)
-  local cfg = self.db[group]
-  local header = CreateFrame("Frame", addonName .. group .. "Header", UIParent)
-  header:SetMovable(true)
-  header:EnableMouse(true)
-  header:RegisterForDrag("LeftButton")
-  header:SetClampedToScreen(true)
-  header:SetScript("OnDragStart", function(self) StartMoving(self, group) end)
-  header:SetScript("OnDragStop", StopMoving)
-  local pointData = self:GetActivePointData(group) or cfg.point
-  SafePoint(header, pointData)
-
-  local count = group == "friendly" and 40 or #cfg.units
-  header:SetSize(cfg.width, (cfg.height * math.max(count, 1)) + ((math.max(count, 1) - 1) * cfg.spacing) + 20)
-
-  header.label = header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  header.label:SetPoint("BOTTOM", header, "TOP", 0, 4)
-  header.label:SetText(group == "friendly" and "SFA Friendly" or "SFA Enemy")
-  header.label:SetShown(not self.db.hideHeaders)
-
-  self.headers[group] = header
-
-  for i = 1, count do
-    local unit = cfg.units[i]
-    self.frames[group][i] = self:CreateUnitFrame(header, unit, group, i)
-    if unit and not InCombatLockdown() then
-      self:ApplyClickBindings(self.frames[group][i], group)
-    end
-  end
-end
-
-function SFA:RebuildGroup(group)
-  if InCombatLockdown() then
-    Print("Cannot rebuild secure frames in combat.")
-    return
-  end
-
-  for _, frame in ipairs(self.frames[group]) do
-    frame:Hide()
-    frame:SetParent(nil)
-  end
-  wipe(self.frames[group])
-
-  if self.headers[group] then
-    self.headers[group]:Hide()
-    self.headers[group]:SetParent(nil)
-    self.headers[group] = nil
-  end
-
-  self:CreateHeader(group)
-  self:RefreshGroup(group)
-end
-
-function SFA:RefreshAll()
-  self:RefreshGroup("friendly")
-  self:RefreshGroup("enemy")
-end
-
-function SFA:ApplyLayout(group)
-  if InCombatLockdown() then
-    self.pendingLayout = true
-    return
-  end
-
-  local cfg = self.db[group]
-  local header = self.headers[group]
-  if not header then return end
-
-  local units = self:GetDisplayedUnits(group)
-  local visibleCount = math.max(self:IsSimulationEnabled() and #((self:GetSimulationProfile() or {})[group] or {}) or #units, 1)
-  local effectiveScale = group == "friendly" and self:GetFriendlyEffectiveScaleForCount(visibleCount) or cfg.scale
-  local activeKey = self:GetCurrentLayoutContextKey(group)
-  local pointData = self:GetActivePointData(group) or cfg.point
-  SafePoint(header, pointData)
-  header:SetScale(effectiveScale)
-  if header.label then header.label:SetShown(not self.db.hideHeaders) end
-
-  local columnGap = cfg.spacing + 10
-  local columns, rows = 1, visibleCount
-  if group == "friendly" then
-    columns, rows = self:GetFriendlyLayoutMetrics(visibleCount)
-  end
-
-  -- For friendly frames, reserve extra vertical space per row for the debuff
-  -- icons anchored under each frame, so they stay visible between units.
-  -- Enemy frames keep their original spacing (no reserve).
-  local debuffReserve = (group == "friendly" and cfg.showDebuffs) and self.DEBUFF_ROW_HEIGHT or 0
-  local rowStride = cfg.height + cfg.spacing + debuffReserve
-
-  local totalWidth = (cfg.width * columns) + (columnGap * math.max(columns - 1, 0))
-  local totalHeight = (cfg.height * rows) + ((rows - 1) * (cfg.spacing + debuffReserve)) + debuffReserve + 20
-  header:SetSize(totalWidth, totalHeight)
-  if header.dragOverlay then
-    header.dragOverlay:ClearAllPoints()
-    header.dragOverlay:SetAllPoints(header)
-  end
-
-  for i, frame in ipairs(self.frames[group]) do
-    frame:SetSize(cfg.width, cfg.height)
-    frame.name:SetWidth(cfg.width - 42)
-    frame:ClearAllPoints()
-
-    local isVisibleFrame = (frame.unit ~= nil) or (frame.simulationData ~= nil and self:IsSimulationEnabled())
-    if isVisibleFrame then
-      if group == "friendly" and visibleCount > 5 then
-        local index = i - 1
-        local col = math.floor(index / 5)
-        local row = index % 5
-        local x = -(col * (cfg.width + columnGap))
-        local y = -(row * rowStride)
-        frame:SetPoint("TOPRIGHT", header, "TOPRIGHT", x, y)
-      else
-        if i == 1 then
-          frame:SetPoint("TOPLEFT", header, "TOPLEFT", 0, 0)
-        else
-          local prev = self.frames[group][i - 1]
-          if prev and ((prev.unit ~= nil) or (prev.simulationData ~= nil and self:IsSimulationEnabled())) then
-            frame:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -(cfg.spacing + debuffReserve))
-          else
-            frame:SetPoint("TOPLEFT", header, "TOPLEFT", 0, 0)
-          end
-        end
-      end
-    else
-      frame:SetPoint("TOPLEFT", header, "TOPLEFT", 0, 0)
-    end
-  end
-end
-
-function SFA:InitializeFrames()
-  self:CreateHeader("friendly")
-  self:CreateHeader("enemy")
-  self:RefreshGroup("friendly")
-  self:RefreshGroup("enemy")
-end
-
-
-
-
-
-function SFA:MigrateFriendlySettings()
-  if not (self and self.db) then return end
-
-  local function clonePoint(src)
-    return {
-      anchor = (src and src.anchor) or "CENTER",
-      relativeTo = "UIParent",
-      relativePoint = (src and src.relativePoint) or "CENTER",
-      x = (src and src.x) or 0,
-      y = (src and src.y) or 0,
-    }
-  end
-
-  for _, group in ipairs({ "friendly", "enemy" }) do
-    local entry = self.db[group]
-    if entry then
-      local clicks = entry.clicks
-      if type(clicks) == "table" then
-        local keys = {
-          autoShrinkLargeGroups = true,
-          largeGroupScale = true,
-          grayOutOfRange = true,
-          rangeThreshold = true,
-          showMyHotsOnly = true,
-          hideBlizzardRaidFrames = true,
-        }
-
-        for key in pairs(keys) do
-          if clicks[key] ~= nil and entry[key] == nil then
-            entry[key] = clicks[key]
-          end
-          clicks[key] = nil
-        end
-      end
-
-      entry.grayOutOfRange = nil
-      entry.rangeThreshold = nil
-      self:EnsureScenarioPoints(group)
-
-      local fallback = clonePoint(entry.point)
-      local sp = entry.scenarioPoints or {}
-
-      if group == "friendly" then
-        -- Build smallGroup from legacy world/arena/dungeon if needed (one-time migration)
-        if type(sp.smallGroup) ~= "table" then
-          sp.smallGroup = clonePoint(sp.world or sp.arena or sp.dungeon or fallback)
-        end
-        if type(sp.raid10) ~= "table" then
-          sp.raid10 = clonePoint(fallback)
-        end
-        if type(sp.raid25) ~= "table" then
-          sp.raid25 = clonePoint(fallback)
-        end
-        -- Ensure world/arena/dungeon exist as distinct keys used by GetCurrentLayoutContextKey.
-        -- Do NOT delete them — they are required for per-scenario position persistence across relogs.
-        if type(sp.world)   ~= "table" then sp.world   = clonePoint(sp.smallGroup or fallback) end
-        if type(sp.arena)   ~= "table" then sp.arena   = clonePoint(sp.smallGroup or fallback) end
-        if type(sp.dungeon) ~= "table" then sp.dungeon = clonePoint(sp.smallGroup or fallback) end
-
-        if entry.autoShrinkLargeGroups == nil then entry.autoShrinkLargeGroups = true end
-        if entry.largeGroupScale == nil then entry.largeGroupScale = 0.85 end
-        if entry.showMyHotsOnly == nil then entry.showMyHotsOnly = false end
-        if entry.hideBlizzardRaidFrames == nil then entry.hideBlizzardRaidFrames = false end
-      else
-        if type(sp.default) ~= "table" then
-          sp.default = clonePoint(sp.default or sp.world or sp.arena or sp.dungeon or sp.raid10 or sp.raid25 or fallback)
-        end
-        sp.world = nil
-        sp.arena = nil
-        sp.dungeon = nil
-        sp.raid10 = nil
-        sp.raid25 = nil
-      end
-
-      entry.scenarioPoints = sp
-    end
-  end
-end
-
-
-
-function SFA:ApplyBlizzardRaidFramesVisibility()
-  if InCombatLockdown() then
-    self.pendingLayout = true
-    return
-  end
-
-  local hide = self.db and self.db.friendly and self.db.friendly.hideBlizzardRaidFrames
-
-  local function applyToFrame(frame, shouldHide)
-    if not frame then return end
-    if shouldHide then
-      frame:Hide()
-      if frame.UnregisterAllEvents then pcall(frame.UnregisterAllEvents, frame) end
-      if frame.SetDontSavePosition then pcall(frame.SetDontSavePosition, frame, true) end
-    else
-      frame:Show()
-    end
-  end
-
-  applyToFrame(CompactRaidFrameManager, hide)
-  applyToFrame(CompactRaidFrameContainer, hide)
-end
-
-
 
 
 function SFA:UpdateMinimapButtonPosition()
@@ -3169,16 +2052,27 @@ function SFA:CreateMinimapButton()
 end
 
 function SFA:OnEvent(event, ...)
+  -- 0.25.0 redesign step 2: keep Target/Focus click-cast in sync with
+  -- whatever the player is currently targeting/focusing. Deliberately
+  -- unconditional (not gated on combat, and not folded into the big
+  -- if/elseif chain below) for the same reason the arena/friendly appliers
+  -- above aren't gated -- the actual reserved-attribute writes happen
+  -- inside the secure snippet, which Blizzard allows during combat, and
+  -- target changes happen constantly mid-fight.
+  if event == "PLAYER_TARGET_CHANGED" or event == "PLAYER_FOCUS_CHANGED" then
+    self:ApplyNativeTargetFocusClickBindings()
+  end
+
   if event == "PLAYER_LOGIN" then
     self:InitializeDB()
-    self:MigrateFriendlySettings()
-    self:InitializeFrames()
+    self.auraDebug = (self.db and self.db.auraDebugEnabled) and true or false
     self:CreateOptionsPanel()
     self:RegisterSlash()
     self:CreateMinimapButton()
     self:RefreshQuestIndicators()
-    self:ApplyBlizzardRaidFramesVisibility()
     self:MacroFrame_Init()
+    self:ApplyAllNativeClickBindings()
+    if self.InstallMenuTagObservers then self:InstallMenuTagObservers() end
     -- Hook the WoW Settings window directly so values refresh whenever the user opens it,
     -- regardless of which subcategory navigation mechanism WoW uses internally.
     local function hookSettingsRefresh()
@@ -3199,28 +2093,25 @@ function SFA:OnEvent(event, ...)
   if event == "PLAYER_SPECIALIZATION_CHANGED" then
     -- Click macros are stored per-spec, so reapply bindings and refresh the
     -- options panel so the displayed macros match the new specialization.
-    if not InCombatLockdown() then
-      self:RefreshGroup("friendly")
-      self:RefreshGroup("enemy")
-    else
-      self.pendingRefresh = true
-    end
+    self:ApplyAllNativeClickBindings()
     if self.RefreshOptionsPanel then self:RefreshOptionsPanel() end
     return
   end
 
   if event == "PLAYER_REGEN_ENABLED" then
+    self:Log("COMBAT END (PLAYER_REGEN_ENABLED)")
     self:StopProcReadyTicker()
     self:ResetProcReadyStates()
-    self:FlushPendingStructuralUpdates()
-    self:ApplyBlizzardRaidFramesVisibility()
     self:UpdateMinimapButtonPosition()
     self:RefreshEnemyNameplateOverlays()
     return
   end
 
   if event == "PLAYER_REGEN_DISABLED" or event == "SPELL_UPDATE_COOLDOWN" or event == "ACTIONBAR_UPDATE_COOLDOWN" or event == "ACTIONBAR_UPDATE_USABLE" or event == "UNIT_SPELLCAST_SUCCEEDED" then
-    if event == "PLAYER_REGEN_DISABLED" then self:StartProcReadyTicker() end
+    if event == "PLAYER_REGEN_DISABLED" then
+      self:Log("COMBAT START (PLAYER_REGEN_DISABLED)")
+      self:StartProcReadyTicker()
+    end
     if event == "UNIT_SPELLCAST_SUCCEEDED" then
       local unit, _, spellID = ...
       if unit == "player" then self:NoteProcReadySpellCast(spellID) end
@@ -3260,21 +2151,13 @@ function SFA:OnEvent(event, ...)
       self:UpdateNameplateQuestIndicator("mouseover")
     end
 
-elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
-  local unit = ...
-  if unit == "player" then
-    -- Re-check full state after a cast (handles spending then refilling),
-    -- but let edge-detection decide whether to actually announce so it
-    -- doesn't repeat every cast while already full.
-    self:CheckFullResourceVoiceOnReachFull()
-  end
+  elseif event == "UNIT_POWER_UPDATE" or event == "UNIT_POWER_FREQUENT" then
+    local unit = ...
+    if unit == "player" then
+      self:RefreshEnemyNameplateOverlays()
+      self:CheckFullResourceVoiceOnReachFull()
+    end
 
-elseif event == "UNIT_POWER_UPDATE" or event == "UNIT_POWER_FREQUENT" then
-  local unit = ...
-  if unit == "player" then
-    self:RefreshEnemyNameplateOverlays()
-    self:CheckFullResourceVoiceOnReachFull()
-  end
   elseif event == "PLAYER_TARGET_CHANGED" or event == "ARENA_PREP_OPPONENT_SPECIALIZATIONS" or event == "ARENA_OPPONENT_UPDATE" or event == "UNIT_NAME_UPDATE" then
     if event == "PLAYER_TARGET_CHANGED" and UnitExists("target") then
       self:UpdateNameplateQuestIndicator("target")
@@ -3282,34 +2165,22 @@ elseif event == "UNIT_POWER_UPDATE" or event == "UNIT_POWER_FREQUENT" then
     self:RefreshEnemyNameplateOverlays()
   end
 
-  -- Data-only combat updates
-  if InCombatLockdown() then
-    if event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH" or event == "UNIT_AURA" or event == "UNIT_NAME_UPDATE" or event == "UNIT_FLAGS" or event == "PLAYER_TARGET_CHANGED" or event == "PLAYER_ROLES_ASSIGNED" or event == "PARTY_MEMBER_ENABLE" or event == "PARTY_MEMBER_DISABLE" then
-      if self:CanRunFriendlyRefreshNow() then self:RefreshGroup("friendly") else self.pendingRefresh = true end
-      self:RefreshGroup("enemy")
-    else
-      self.pendingLayout = true
-      self.pendingVisibility = true
-    end
-    return
-  end
-
-  if not InCombatLockdown() and (event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" or event == "GROUP_ROSTER_UPDATE") then
-    self:ApplyBlizzardRaidFramesVisibility()
+  if event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" or event == "GROUP_ROSTER_UPDATE" or event == "ARENA_PREP_OPPONENT_SPECIALIZATIONS" or event == "ARENA_OPPONENT_UPDATE" then
+    self:ApplyAllNativeClickBindings()
+    -- Frame creation on entering arena/party/raid can lag the event by a
+    -- beat (Blizzard frames not fully populated yet), so reapply a couple
+    -- more times shortly after rather than trusting one immediate pass.
+    C_Timer.After(0.20, function() if SFA and SFA.ApplyAllNativeClickBindings then SFA:ApplyAllNativeClickBindings() end end)
+    C_Timer.After(0.75, function() if SFA and SFA.ApplyAllNativeClickBindings then SFA:ApplyAllNativeClickBindings() end end)
   end
 
   if event == "PLAYER_ENTERING_WORLD" or event == "ZONE_CHANGED_NEW_AREA" or event == "ARENA_PREP_OPPONENT_SPECIALIZATIONS" or event == "ARENA_OPPONENT_UPDATE" then
-    self:QueueArenaRefreshes()
     C_Timer.After(0.15, function()
       if SFA and SFA.db then
         SFA:RefreshQuestIndicators()
-        if not InCombatLockdown() then
-          SFA:RefreshEnemyNameplateOverlays()
-        end
+        SFA:RefreshEnemyNameplateOverlays()
       end
     end)
-  else
-    self:QueueRefresh()
   end
 end
 
@@ -3321,22 +2192,16 @@ function SFA:RegisterEvents()
   self.eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
   self.eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
   self.eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
+  self.eventFrame:RegisterEvent("PLAYER_FOCUS_CHANGED")
   self.eventFrame:RegisterEvent("UNIT_POWER_UPDATE")
   self.eventFrame:RegisterEvent("UNIT_POWER_FREQUENT")
   self.eventFrame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
   self.eventFrame:RegisterEvent("SPELL_UPDATE_COOLDOWN")
   self.eventFrame:RegisterEvent("ACTIONBAR_UPDATE_COOLDOWN")
   self.eventFrame:RegisterEvent("ACTIONBAR_UPDATE_USABLE")
-  self.eventFrame:RegisterEvent("UNIT_HEALTH")
-  self.eventFrame:RegisterEvent("UNIT_MAXHEALTH")
-  self.eventFrame:RegisterEvent("UNIT_AURA")
   self.eventFrame:RegisterEvent("UNIT_NAME_UPDATE")
-  self.eventFrame:RegisterEvent("UNIT_FLAGS")
   self.eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
   self.eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
-  self.eventFrame:RegisterEvent("PLAYER_ROLES_ASSIGNED")
-  self.eventFrame:RegisterEvent("PARTY_MEMBER_ENABLE")
-  self.eventFrame:RegisterEvent("PARTY_MEMBER_DISABLE")
   self.eventFrame:RegisterEvent("ARENA_PREP_OPPONENT_SPECIALIZATIONS")
   self.eventFrame:RegisterEvent("ARENA_OPPONENT_UPDATE")
   self.eventFrame:RegisterEvent("NAME_PLATE_UNIT_ADDED")
@@ -3353,69 +2218,416 @@ end
 
 SFA:RegisterEvents()
 
+-- ---------------------------------------------------------------------
+-- One-off diagnostic: hunt for whatever frame(s) currently represent the
+-- native Blizzard arena-enemy UI, since Midnight removed/renamed the old
+-- ArenaEnemyFrame1-5 globals and no documentation has surfaced yet for
+-- their replacement. Logs every candidate to SFA_DebugLog (via /sfaauradebug
+-- or the Debug tab's Enable checkbox) instead of just chat, so results
+-- survive a /reload and don't need to be manually copied out of the chat
+-- window. Safe to leave shipped -- only runs when explicitly invoked via
+-- /sfascanarena, does a single pass, no ongoing cost.
+-- ---------------------------------------------------------------------
+function SFA:ScanArenaFrames()
+  -- One-off diagnostic, explicitly triggered (button/command) -- always
+  -- write to the log regardless of the Enable-debug checkbox, so a
+  -- forgotten toggle can't make this silently produce nothing (this bit
+  -- the arena-frame investigation more than once before this was added).
+  local prevDebug = self.auraDebug
+  self.auraDebug = true
 
-function SFA:GetUnitRoleVisual(unit, frame)
-  local sim = frame and frame.simulationData or self:GetSimulationData(unit)
-  if sim then
-    if sim.healer then
-      return "HEALER"
-    elseif sim.tank then
-      return "TANK"
+  self:Log("ARENA SCAN START")
+  local nameMatches, attrMatches = 0, 0
+
+  local f = EnumerateFrames()
+  while f do
+    local ok, name = pcall(f.GetName, f)
+    name = (ok and name) or nil
+
+    if name and name:lower():find("arena") then
+      nameMatches = nameMatches + 1
+      local okShown, shown = pcall(f.IsShown, f)
+      self:Log("arenascan name-match frame=%s shown=%s", name, tostring(okShown and shown))
     end
-    return nil
-  end
 
-  local specID = self:GetEnemySpecID(unit)
-  if specID and self.healerSpecs[specID] then
-    return "HEALER"
-  end
-  if specID and self.tankSpecs and self.tankSpecs[specID] then
-    return "TANK"
-  end
-
-  if UnitGroupRolesAssigned then
-    local ok, role = pcall(UnitGroupRolesAssigned, unit)
-    role = ok and SFA_SafeValue(role) or nil
-    if role == "HEALER" or role == "TANK" then
-      return role
-    end
-  end
-
-  if unit == "player" and GetSpecialization and GetSpecializationInfo then
-    local specIndex = GetSpecialization()
-    if specIndex then
-      local spec = GetSpecializationInfo(specIndex)
-      if spec and self.healerSpecs[spec] then
-        return "HEALER"
+    -- unitAttr/unitField may be Blizzard "secret values" (frames bound to
+    -- restricted-content units) -- comparing to nil is safe, but calling
+    -- tostring()/:match() directly on the raw value is NOT and throws an
+    -- uncaught error, silently killing the whole scan. Use the existing
+    -- pcall-protected SFA_DescribeValue() helper instead, which returns
+    -- "<secret>" for secret values rather than crashing.
+    local okAttr, unitAttr = pcall(f.GetAttribute, f, "unit")
+    if okAttr and unitAttr ~= nil then
+      local descAttr = SFA_DescribeValue(unitAttr)
+      if descAttr:match("^arena%d$") then
+        attrMatches = attrMatches + 1
+        self:Log("arenascan attr-match frame=%s unit=%s", name or SFA_DescribeValue(f), descAttr)
+      elseif descAttr == "<secret>" then
+        self:Log("arenascan attr-secret frame=%s unit=<secret>", name or SFA_DescribeValue(f))
       end
-      if spec and self.tankSpecs and self.tankSpecs[spec] then
-        return "TANK"
+    end
+
+    local okField, unitField = pcall(function() return f.unit end)
+    if okField and unitField ~= nil then
+      local descField = SFA_DescribeValue(unitField)
+      if descField:match("^arena%d$") then
+        attrMatches = attrMatches + 1
+        self:Log("arenascan field-match frame=%s unit=%s", name or SFA_DescribeValue(f), descField)
+      elseif descField == "<secret>" then
+        self:Log("arenascan field-secret frame=%s unit=<secret>", name or SFA_DescribeValue(f))
       end
+    end
+
+    f = EnumerateFrames(f)
+  end
+
+  if C_NamePlate and C_NamePlate.GetNamePlateForUnit then
+    for i = 1, 5 do
+      local unit = "arena" .. i
+      local okNp, np = pcall(C_NamePlate.GetNamePlateForUnit, unit)
+      self:Log("arenascan nameplate unit=%s found=%s", unit, tostring(okNp and np ~= nil))
     end
   end
 
-  return nil
+  self:Log("ARENA SCAN DONE name-matches=%d attr-matches=%d", nameMatches, attrMatches)
+  self.auraDebug = prevDebug
+  DEFAULT_CHAT_FRAME:AddMessage(string.format(
+    "|cff7cc6ffSFA:|r arena scan done (%d name-match, %d attr/field-match) -- written to debug log",
+    nameMatches, attrMatches))
 end
 
+-- ---------------------------------------------------------------------
+-- Diagnostic for the 0.24.26/27 native-arena-frame click-cast feature:
+-- user reports middle-click on ArenaEnemyMatchFrameN still does Blizzard's
+-- default "select" behavior instead of firing the configured macro, even
+-- after the 0.24.27 combat-lockdown-guard fix. This forces one apply pass
+-- (SFA:ApplyNativeArenaClickBindings) and then reads back the ACTUAL
+-- attributes Blizzard's frame ends up with -- both for ArenaEnemyMatchFrameN
+-- and CompactArenaFrameMemberN -- to see whether our SetAttribute writes
+-- are (a) landing at all, (b) being overwritten by Blizzard's own code
+-- afterward, or (c) landing on a frame/attribute the click handler simply
+-- doesn't consult. Call via /run SFA:DumpArenaFrameAttributes() (typed
+-- /sfa slash commands can be swallowed by chat autocomplete, see
+-- /sfascanarena notes) -- writes everything to SFA_DebugLog.
+-- ---------------------------------------------------------------------
+function SFA:DumpArenaFrameAttributes()
+  -- One-off diagnostic, explicitly triggered (button/command) -- always
+  -- write to the log regardless of the Enable-debug checkbox, so a
+  -- forgotten toggle can't make this silently produce nothing.
+  local prevDebug = self.auraDebug
+  self.auraDebug = true
 
-function SFA:ShouldShowRoleIcon(group, roleVisual)
-  return roleVisual == "HEALER" or roleVisual == "TANK"
+  self:Log("ARENA ATTR DUMP START")
+
+  -- Force one apply pass right now so the dump reflects a fresh write.
+  local okApply, applyErr = pcall(function() self:ApplyNativeArenaClickBindings() end)
+  self:Log("arenaattr apply-native ok=%s err=%s", tostring(okApply), okApply and "" or SFA_DescribeValue(applyErr))
+
+  local function dumpFrame(frameName)
+    local f = _G[frameName]
+    if not f then
+      self:Log("arenaattr frame=%s MISSING", frameName)
+      return
+    end
+
+    local okProt, isProt = pcall(f.IsProtected, f)
+    local okType, objType = pcall(f.GetObjectType, f)
+    -- 0.24.37: neither the parent button nor its HealthBar/ManaBar children
+    -- ever fired a hooked mouse event during a live click test (0.24.36),
+    -- even though the user visibly saw target-selection happen. That raises
+    -- a new suspect: if the user has "Raid-Style Arena Frames" enabled in
+    -- Blizzard's options, the frames actually SHOWN and clicked on screen
+    -- would be CompactArenaFrameMember1-5, not ArenaEnemyMatchFrame1-5 --
+    -- our diagnostics have only ever been watching the classic family.
+    -- IsShown/IsVisible here settles it directly.
+    local okShown, isShown = pcall(f.IsShown, f)
+    local okVisible, isVisible = pcall(f.IsVisible, f)
+    self:Log("arenaattr frame=%s protected=%s objType=%s shown=%s visible=%s",
+      frameName, tostring(okProt and isProt), tostring(okType and objType or "?"),
+      tostring(okShown and isShown), tostring(okVisible and isVisible))
+
+    local keys = {
+      "unit",
+      "type1", "macrotext1",
+      "type2", "macrotext2",
+      "type3", "macrotext3",
+      "type4", "macrotext4",
+      "type5", "macrotext5",
+    }
+    for _, key in ipairs(keys) do
+      local okAttr, val = pcall(f.GetAttribute, f, key)
+      local desc = okAttr and SFA_DescribeValue(val) or "<error>"
+      self:Log("arenaattr frame=%s %s=%s", frameName, key, desc)
+    end
+  end
+
+  for i = 1, 5 do
+    dumpFrame("ArenaEnemyMatchFrame" .. i)
+  end
+  for i = 1, 5 do
+    dumpFrame("CompactArenaFrameMember" .. i)
+  end
+
+  self:Log("ARENA ATTR DUMP DONE")
+  self.auraDebug = prevDebug
+  DEFAULT_CHAT_FRAME:AddMessage("|cff7cc6ffSFA:|r arena attribute dump done -- written to debug log")
 end
 
+-- 0.25.0 redesign, step 2: reactive click-cast on TargetFrame/FocusFrame.
+-- Unlike arena/party/raid (where a frame's role -- friendly or enemy -- is
+-- fixed), Target/Focus show whatever the player last targeted/focused, so
+-- the SAME frame must swap between the "friendly" and "enemy" per-spec
+-- macro table depending on the current unit's reaction, and clear entirely
+-- when the unit doesn't exist. Uses the same non-tainting driver as
+-- everything else above -- only the macro-table choice differs.
+local function SFA_ApplyNativeReactiveClickBindings(self, frameName)
+  local frame = _G[frameName]
+  if not frame then return end
 
-function SFA:GetSpecIconForUnit(unit)
-  return nil
+  -- 0.25.10: resolve the current unit/group BEFORE deciding whether to
+  -- register at all -- see SFA_ApplyNativeClickBindingsForFrames above for
+  -- why: a frame we've never touched yet this session, whose CURRENT
+  -- group is disabled, is skipped completely (no RegisterForClicks, no
+  -- HookScript, no SetAttribute) so Blizzard's own default right-click
+  -- menu is never disturbed in the first place. A frame already touched
+  -- earlier this session (e.g. it showed an enabled-group unit before)
+  -- keeps being driven as before -- clearing to nil is the best we can do
+  -- for it without a reload.
+  local unit = frame.unit
+  if type(unit) ~= "string" then unit = nil end
+
+  local okExists, exists = pcall(UnitExists, unit)
+  local clickGroup = nil
+  if unit and okExists and exists then
+    local okFriend, isFriend = pcall(UnitIsFriend, "player", unit)
+    clickGroup = (okFriend and isFriend) and "friendly" or "enemy"
+  end
+  local enabled = clickGroup and self:GetCharEnabled(clickGroup)
+
+  -- 0.25.11: read-only hook, unconditional regardless of enabled/disabled
+  -- -- see SFA_EnsureClickHook. Must happen even when we're about to skip
+  -- registration below, so the sniffer/Ctrl+Alt menu still works on a
+  -- frame we otherwise leave completely alone.
+  SFA_EnsureClickHook(self, frame, frameName)
+
+  if not frame.sfaNativeClickRegistered then
+    -- 0.25.19: TargetFrame/FocusFrame have no fixed click group -- unlike
+    -- arena/friendly frames, which group applies depends on WHO is
+    -- currently targeted, so at PLAYER_LOGIN (before any target exists)
+    -- `enabled` above is nil even when the user wants click-cast on. That
+    -- left a real gap: the very first touch (the one that permanently
+    -- decides, for this session, whether Blizzard's own native menu stays
+    -- installed on this frame -- see the one-time-decision finding above)
+    -- was deferred until a target/focus actually existed, instead of
+    -- happening deterministically at login. In practice a same-session
+    -- carryover (e.g. an earlier disable-checkbox test before a later
+    -- re-enable, with no reload in between) could leave the frame's
+    -- decision already locked to native from earlier in the session, with
+    -- no way for a later "enabled" apply to reclaim it -- confirmed live
+    -- (2026-09-01): the user saw click-and-cast fail to fire on TargetFrame
+    -- until their next reload, matching this exact gap. Fix: if EITHER
+    -- group is currently enabled, touch (register) the frame immediately
+    -- even with no unit/clickGroup yet -- an empty attribute set is
+    -- harmless (SFA_ApplyNativeClickDriver below still runs with `desired`
+    -- unset when clickGroup is nil) but it claims the one-time decision for
+    -- the addon right at login, before the user can possibly interact with
+    -- the frame at all. Only truly skip touching (preserving native
+    -- end-to-end) when BOTH groups are disabled, since we can't yet know
+    -- which group this frame will actually need.
+    local anyGroupEnabled = self:GetCharEnabled("friendly") or self:GetCharEnabled("enemy")
+    if not (enabled or anyGroupEnabled) then return end
+
+    SFA_RegisterClickFrame(frame)
+    local okReg, regErr = pcall(frame.RegisterForClicks, frame, "AnyUp", "AnyDown")
+    self:Log("native-click RegisterForClicks frame=%s ok=%s err=%s",
+      frameName, tostring(okReg), okReg and "" or SFA_DescribeValue(regErr))
+
+    frame.sfaNativeClickRegistered = true
+  end
+
+  if not clickGroup then
+    SFA_ApplyNativeClickDriver(frame, {})
+    return
+  end
+
+  local clicks = self:GetSpecClickTable(clickGroup)
+  if type(clicks) ~= "table" then clicks = {} end
+  if not enabled then clicks = {} end
+
+  local buttonKeys = {
+    LeftButton = { "type1", "macrotext1", "set1" },
+    RightButton = { "type2", "macrotext2", "set2" },
+    MiddleButton = { "type3", "macrotext3", "set3" },
+  }
+
+  local desired = {}
+  for button, keys in pairs(buttonKeys) do
+    local macroText = clicks[button]
+    if macroText and macroText ~= "" then
+      desired[keys[1]] = "macro"
+      desired[keys[2]] = SFA_ResolveMacroForUnit(macroText, unit)
+      desired[keys[3]] = true
+    else
+      desired[keys[1]] = nil
+      desired[keys[2]] = nil
+      desired[keys[3]] = false
+    end
+  end
+
+  SFA_ApplyNativeClickDriver(frame, desired)
 end
 
-
-function SFA:UpdateEnemySpecIcon(frame, group, unit)
-  if frame and frame.specIcon then frame.specIcon:Hide() end
+function SFA:ApplyNativeTargetFocusClickBindings()
+  SFA_ApplyNativeReactiveClickBindings(self, "TargetFrame")
+  SFA_ApplyNativeReactiveClickBindings(self, "FocusFrame")
 end
 
+-- ---------------------------------------------------------------------
+-- Diagnostic (0.25.0 redesign step 1): the friendly-frame equivalent of
+-- ScanArenaFrames/DumpArenaFrameAttributes above. Party frames failed
+-- outright on the first live test (unlike arena, which at least had
+-- correct-but-unused attributes) -- broaden the net with a live frame-tree
+-- scan rather than guessing more fixed names blind.
+-- ---------------------------------------------------------------------
+function SFA:ScanFriendlyFrames()
+  local prevDebug = self.auraDebug
+  self.auraDebug = true
 
--- === SFA GCD Stats (Character Frame) ===
--- v0.21.32: fixed quest indicator creation on protected Story Mode Raid nameplates.
--- This avoids PvP-instance secret values entirely. The Character panel already shows Haste.
+  self:Log("FRIENDLY SCAN START")
+  local nameMatches, attrMatches = 0, 0
+
+  local f = EnumerateFrames()
+  while f do
+    local ok, name = pcall(f.GetName, f)
+    name = (ok and name) or nil
+
+    if name and (name:lower():find("party") or name:lower():find("compactraid") or name:lower():find("follower")) then
+      nameMatches = nameMatches + 1
+      local okShown, shown = pcall(f.IsShown, f)
+      local okVisible, visible = pcall(f.IsVisible, f)
+      self:Log("friendlyscan name-match frame=%s shown=%s visible=%s",
+        name, tostring(okShown and shown), tostring(okVisible and visible))
+    end
+
+    local okAttr, unitAttr = pcall(f.GetAttribute, f, "unit")
+    if okAttr and unitAttr ~= nil then
+      local descAttr = SFA_DescribeValue(unitAttr)
+      if descAttr:match("^party%d$") or descAttr:match("^raid%d+$") or descAttr == "player" then
+        attrMatches = attrMatches + 1
+        local okShown2, shown2 = pcall(f.IsShown, f)
+        self:Log("friendlyscan attr-match frame=%s unit=%s shown=%s",
+          name or SFA_DescribeValue(f), descAttr, tostring(okShown2 and shown2))
+
+        -- 0.25.1: also log the parent chain (up to 6 levels) for unnamed
+        -- matches, so if the anonymous-frame scan (SFA_FindUnitButtonsUnder,
+        -- scoped to PartyFrame/CompactRaidFrameContainer) ever comes up
+        -- empty for a match seen here, we already have what's needed to
+        -- retarget it -- no need for another diagnostic round-trip.
+        if not name then
+          local chain = {}
+          local p = f
+          for i = 1, 6 do
+            local okP, parent = pcall(p.GetParent, p)
+            if not okP or not parent then break end
+            local okPName, pName = pcall(parent.GetName, parent)
+            chain[#chain + 1] = (okPName and pName) or "<unnamed>"
+            p = parent
+          end
+          self:Log("friendlyscan attr-match parent-chain frame=%s chain=%s",
+            SFA_DescribeValue(f), table.concat(chain, " < "))
+        end
+      elseif descAttr == "<secret>" then
+        self:Log("friendlyscan attr-secret frame=%s unit=<secret>", name or SFA_DescribeValue(f))
+      end
+    end
+
+    f = EnumerateFrames(f)
+  end
+
+  self:Log("FRIENDLY SCAN DONE name-matches=%d attr-matches=%d", nameMatches, attrMatches)
+  self.auraDebug = prevDebug
+  DEFAULT_CHAT_FRAME:AddMessage(string.format(
+    "|cff7cc6ffSFA:|r friendly scan done (%d name-match, %d attr-match) -- written to debug log",
+    nameMatches, attrMatches))
+end
+
+function SFA:DumpFriendlyFrameAttributes()
+  local prevDebug = self.auraDebug
+  self.auraDebug = true
+
+  self:Log("FRIENDLY ATTR DUMP START")
+
+  local okApply, applyErr = pcall(function() self:ApplyNativeFriendlyClickBindings() end)
+  self:Log("friendlyattr apply-native ok=%s err=%s", tostring(okApply), okApply and "" or SFA_DescribeValue(applyErr))
+  local okApply2, applyErr2 = pcall(function() self:ApplyNativeTargetFocusClickBindings() end)
+  self:Log("friendlyattr apply-native-targetfocus ok=%s err=%s", tostring(okApply2), okApply2 and "" or SFA_DescribeValue(applyErr2))
+
+  local function dumpFrame(frameName)
+    local f = _G[frameName]
+    if not f then return end -- skip absent names; the friendly name list is large
+
+    local okProt, isProt = pcall(f.IsProtected, f)
+    local okType, objType = pcall(f.GetObjectType, f)
+    local okShown, isShown = pcall(f.IsShown, f)
+    local okVisible, isVisible = pcall(f.IsVisible, f)
+    self:Log("friendlyattr frame=%s protected=%s objType=%s shown=%s visible=%s",
+      frameName, tostring(okProt and isProt), tostring(okType and objType or "?"),
+      tostring(okShown and isShown), tostring(okVisible and isVisible))
+
+    local keys = { "unit", "type1", "macrotext1", "type2", "macrotext2", "type3", "macrotext3" }
+    for _, key in ipairs(keys) do
+      local okAttr, val = pcall(f.GetAttribute, f, key)
+      local desc = okAttr and SFA_DescribeValue(val) or "<error>"
+      self:Log("friendlyattr frame=%s %s=%s", frameName, key, desc)
+    end
+
+    local okDesc, desc = pcall(SFA_DescribeFrameChildren, f)
+    self:Log("friendlyattr frame=%s structure: %s", frameName, okDesc and desc or "<error describing>")
+  end
+
+  for _, frameName in ipairs(SFA_NATIVE_FRIENDLY_FRAME_NAMES) do
+    dumpFrame(frameName)
+  end
+  dumpFrame("TargetFrame")
+  dumpFrame("FocusFrame")
+
+  -- 0.25.1: also report what the anonymous-frame scan (PartyFrame /
+  -- CompactRaidFrameContainer descendants) actually found and bound,
+  -- since these are the frames a "shown but not visible" named frame
+  -- (e.g. CompactPartyFrameMember1-5) turned out to be masking.
+  local anonResults = {}
+  SFA_FindUnitButtonsUnder(_G["PartyFrame"], SFA_FRIENDLY_ANON_UNIT_TOKENS, anonResults, 1)
+  SFA_FindUnitButtonsUnder(_G["CompactRaidFrameContainer"], SFA_FRIENDLY_ANON_UNIT_TOKENS, anonResults, 1)
+  self:Log("friendlyattr anon-scan matches=%d", #anonResults)
+  for _, f in ipairs(anonResults) do
+    local okAttr, unitAttr = pcall(f.GetAttribute, f, "unit")
+    local okShown, isShown = pcall(f.IsShown, f)
+    local okVisible, isVisible = pcall(f.IsVisible, f)
+    local okName, name = pcall(f.GetName, f)
+    self:Log("friendlyattr anon frame=%s unit=%s shown=%s visible=%s",
+      (okName and name) or SFA_DescribeValue(f),
+      (okAttr and SFA_DescribeValue(unitAttr)) or "?",
+      tostring(okShown and isShown), tostring(okVisible and isVisible))
+  end
+
+  self:Log("FRIENDLY ATTR DUMP DONE")
+  self.auraDebug = prevDebug
+  DEFAULT_CHAT_FRAME:AddMessage("|cff7cc6ffSFA:|r friendly attribute dump done -- written to debug log")
+end
+
+-- 0.24.40: prep work for "use Blizzard arena frames instead of SFA's own,
+-- positioned where SFA's frames are". Repositioning a Blizzard-owned frame
+-- from addon code is a known taint source specifically when that frame is
+-- managed by Blizzard's Edit Mode system (Edit Mode re-applies its own
+-- stored layout, fighting any SetPoint an addon makes) -- confirmed via
+-- research, not yet directly tested against these two frame families.
+-- Before writing any actual repositioning code, walk each family's parent
+-- chain (frame:GetParent() repeatedly up to UIParent/nil) and log every
+-- ancestor's name/objType/current anchor point, so we know exactly which
+-- frame is the real "move this one and the rest follows" container, and
+-- whether it's plausibly an Edit Mode system (Edit Mode elements are
+-- typically the outermost frame with a specific point in UIParent) before
+-- attempting to touch it.
 local SFA_GCDText = SFA_GCDText
 local SFA_GCD_SPELL_ID = 61304
 local SFA_BASE_GCD = 1.5

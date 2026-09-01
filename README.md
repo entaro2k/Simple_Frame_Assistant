@@ -1,130 +1,31 @@
 # Simple Frame Assistant (SFA)
 
-Lightweight PvP / PvE helper addon for World of Warcraft  
-Focused on clarity, speed, and minimal UI clutter.
+Click-and-cast on Blizzard's own frames — keep the frames you already positioned and styled with the native Edit Mode, and just add fast one-click spells on top.
 
----
+## Why it's different
 
-## ✨ Features
+Most click-cast addons come with their own unit frames, which means re-doing your layout, losing Edit Mode, and running two frame systems side by side. SFA doesn't touch your frames at all — it drops your Left / Right / Middle click macros straight onto Blizzard's real Player, Target, Focus, Party, Raid, and Arena frames. Move them, resize them, skin them with Edit Mode or any layout addon you like; SFA just makes them clickable.
 
-### 🟢 Friendly Frames
-- Solo → shows only player
-- Party / Raid → automatically displays group members
-- Clean vertical / grid layout for large groups
-- Click-cast macros (Left / Right / Middle / extra buttons)
-- Buffs (on bar) & debuffs (below bar)
-- Optional class-colored health bars
-- Healer (+) and Tank (shield) indicators
+## Features
 
----
+- **Click-cast on native frames** — Player, Target, Focus, Party/Raid (any layout, any group size), and Arena enemy frames. Left / Right / Middle, separate macros for friendly and enemy.
+- **Per-spec macros** — set once per specialization, switches automatically with your spec.
+- **Turn it off per group, any time** — a "disable click-cast" toggle for Friendly or Enemy instantly hands the right-click back to Blizzard's own menu, no need to disable the whole addon.
+- **Blizzard's real menu, on demand** — hold Ctrl+Alt and right-click to pop Blizzard's actual context menu for that unit, even while click-cast is running the plain right-click.
 
-### 🔴 Enemy Frames
-- Arena enemy tracking (auto slots)
-- World → shows current hostile target only
-- Target highlight (border)
-- Click-cast support (Cyclone, Roots, etc.)
-- Class-colored health bars (optional)
+## Smart Assist
 
----
+- Builder/spender resource-full alert — screen glow plus an optional voice callout (male/female), adjustable volume and cooldown.
+- Proc-ready voice alerts for the spells you pick.
+- Quest-objective `!` marker on nameplates.
+- Enemy target `X` marker.
+- Estimated GCD readout under the Character window.
+- Optional minimap button.
 
-### 🧠 Smart Assist
+## Options
 
-Advanced automation & awareness tools:
+`/sfa`, or Esc → Options → AddOns → Simple Frame Assistant.
 
-#### 🎯 Visual Assist
+## Compatibility
 
-- ❌ **Target Marker**
-  - Red **X above nameplate** for current target
-  - Optional builder–spender orb when resource is full
-
-- ❗ **Quest Indicator**
-  - Yellow **! above NPCs** related to active quests or scenarios
-  - Smart detection using tooltip data (safe, no taint)
-
----
-
-#### 🔊 Voice Assist
-
-- Triggers when builder–spender resource is full:
-  - COMBO FULL
-  - CHI FULL
-  - HOLY POWER FULL
-  - SOUL SHARDS FULL
-  - ESSENCE FULL
-
-- 🎧 Voice styles:
-  - Male
-  - Female (smooth, natural tone)
-
-- 🎚️ Adjustable voice volume (0–10)
-- ⏱️ Configurable alert cooldown
-
-- 🔄 Trigger conditions:
-  - On reaching full resource
-  - On ability usage while resource is full
-
----
-
-### ⚔️ Simulation Mode
-Test the UI without combat.
-
-Available modes:
-- Arena 3v3
-- Dungeon (5-man)
-- Raid (10 / 25)
-- World
-
-Simulates:
-- roles (healer / tank / dps)
-- buffs & debuffs
-- realistic layouts
-- target states
-
----
-
-### ⚙️ Options Menu
-
-Available in:
-ESC → Options → AddOns → Simple Frame Assistant  
-or via command: `/sfa`
-
-Sections:
-- General
-- Friendly Frame
-- Enemy Frame
-- Smart Assist
-- Simulation
-
----
-
-### 🔵 Additional Features
-
-- Builder–spender resource indicator (combo / holy power / etc.)
-- Enemy target **X marker**
-- Quest objective detection on nameplates
-- Estimated / One-Button GCD display in Character window
-
----
-
-## 🚀 Design Goals
-
-- Minimal UI clutter
-- Fast updates (arena-ready)
-- No taint / safe API usage
-- Clear visual + audio feedback
-
----
-
-## 🧩 Compatibility
-
-- Designed for WoW Midnight
-- Compatible with Interface: 120005+
-
----
-
-## 📌 Notes
-
-- Positions are saved per context (Arena / Party / Raid / World)
-- Click-cast macros support `[unit]` expansion automatically
-- Voice alerts use custom `.ogg` files (user-replaceable)
-
+World of Warcraft: Midnight (Interface 120100+).

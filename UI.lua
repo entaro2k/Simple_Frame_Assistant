@@ -173,11 +173,6 @@ local function UI_AC_Apply(state)
 end
 
 local CreateFrame = CreateFrame
-local UIDropDownMenu_CreateInfo = UIDropDownMenu_CreateInfo
-local UIDropDownMenu_SetWidth = UIDropDownMenu_SetWidth
-local UIDropDownMenu_SetText = UIDropDownMenu_SetText
-local UIDropDownMenu_Initialize = UIDropDownMenu_Initialize
-local UIDropDownMenu_AddButton = UIDropDownMenu_AddButton
 
 local function GetAddonVersion()
   if C_AddOns and C_AddOns.GetAddOnMetadata then
@@ -948,85 +943,49 @@ local function CreateCanvasFrame(name)
   return frame
 end
 
-local function CreateTargetColorDropDown(parent, x, y, currentMode, onSet)
-  local title = CreateLabel(parent, "", x, y, "GameFontHighlight")
-  local drop = CreateFrame("Frame", nil, parent, "UIDropDownMenuTemplate")
+-- These three dropdowns used to be built on the legacy UIDropDownMenuTemplate
+-- / UIDropDownMenu_Initialize API. That API is a well-known, long-standing
+-- taint source: UIDropDownMenu_Initialize() runs the init callback
+-- immediately (not just when opened) and both it and UIDropDownMenu_AddButton
+-- read/write shared Blizzard globals (UIDROPDOWNMENU_MENU_LEVEL, etc.) that
+-- are also touched by Blizzard's own dropdown menus everywhere else in the
+-- game UI. taint.log confirmed this was tainting execution the moment the
+-- options panel was built (i.e. right at login, before combat), which is
+-- exactly the kind of taint that accumulates into "*** ForceTaint_Strong ***"
+-- and then blocks secret aura reads later. Rebuilt on Blizzard's modern,
+-- non-global-state "DropdownButton" / WowStyle1DropdownTemplate menu API,
+-- which doesn't touch that shared global state.
+local function SFA_CreateSimpleDropdown(parent, x, y, width, options, currentValue, onSet)
+  local drop = CreateFrame("DropdownButton", nil, parent, "WowStyle1DropdownTemplate")
   drop:SetPoint("TOPLEFT", x - 14, y - 18)
-  UIDropDownMenu_SetWidth(drop, 170)
+  drop:SetWidth(width)
 
-  UIDropDownMenu_Initialize(drop, function(self, level)
-    local function addOption(value, text)
-      local info = UIDropDownMenu_CreateInfo()
-      info.text = text
-      info.func = function()
-        onSet(value)
-        UIDropDownMenu_SetText(drop, text)
-      end
-      UIDropDownMenu_AddButton(info, level)
+  drop:SetupMenu(function(owner, rootDescription)
+    for _, option in ipairs(options) do
+      rootDescription:CreateButton(option.text, function()
+        onSet(option.value)
+        drop:OverrideText(option.text)
+      end)
     end
-    addOption("none", "None")
-    addOption("soft", "Soft")
-    addOption("medium", "Mediu")
-    addOption("subtle", "Foarte discret")
   end)
 
-  local label = currentMode == "none" and "None" or currentMode == "soft" and "Soft" or currentMode == "subtle" and "Foarte discret" or "Mediu"
-  UIDropDownMenu_SetText(drop, label)
-  return drop, title
-end
-
-
-local function CreateSimulationScenarioDropDown(parent, x, y, currentMode, onSet)
-  local title = CreateLabel(parent, "Scenario", x, y, "GameFontHighlight")
-  local drop = CreateFrame("Frame", nil, parent, "UIDropDownMenuTemplate")
-  drop:SetPoint("TOPLEFT", x - 14, y - 18)
-  UIDropDownMenu_SetWidth(drop, 180)
-
-  UIDropDownMenu_Initialize(drop, function(self, level)
-    local function addOption(value, text)
-      local info = UIDropDownMenu_CreateInfo()
-      info.text = text
-      info.func = function()
-        onSet(value)
-        UIDropDownMenu_SetText(drop, text)
-      end
-      UIDropDownMenu_AddButton(info, level)
+  local initialLabel = currentValue
+  for _, option in ipairs(options) do
+    if option.value == currentValue then
+      initialLabel = option.text
+      break
     end
-    addOption("arena3v3", "Arena 3v3")
-    addOption("world", "World")
-    addOption("dungeon", "Dungeon")
-    addOption("raid10", "Raid 10")
-    addOption("raid25", "Raid 25")
-  end)
-
-  local label = currentMode == "world" and "World" or currentMode == "dungeon" and "Dungeon" or currentMode == "raid10" and "Raid 10" or currentMode == "raid25" and "Raid 25" or "Arena 3v3"
-  UIDropDownMenu_SetText(drop, label)
-  return drop, title
+  end
+  drop:OverrideText(initialLabel)
+  return drop
 end
 
 local function CreateResourceVoiceStyleDropDown(parent, x, y, currentMode, onSet)
   local title = CreateLabel(parent, "Voice style", x, y, "GameFontHighlight")
-  local drop = CreateFrame("Frame", nil, parent, "UIDropDownMenuTemplate")
-  drop:SetPoint("TOPLEFT", x - 14, y - 18)
-  UIDropDownMenu_SetWidth(drop, 190)
-
-  local labels = { male = "Male", female = "Female" }
-
-  UIDropDownMenu_Initialize(drop, function(self, level)
-    local function addOption(value, text)
-      local info = UIDropDownMenu_CreateInfo()
-      info.text = text
-      info.func = function()
-        onSet(value)
-        UIDropDownMenu_SetText(drop, text)
-      end
-      UIDropDownMenu_AddButton(info, level)
-    end
-    addOption("male", "Male")
-    addOption("female", "Female")
-  end)
-
-  UIDropDownMenu_SetText(drop, labels[currentMode] or "Male")
+  local drop = SFA_CreateSimpleDropdown(parent, x, y, 190, {
+    { value = "male", text = "Male" },
+    { value = "female", text = "Female" },
+  }, currentMode or "male", onSet)
   return drop, title
 end
 
@@ -1044,47 +1003,13 @@ if self.options.otherBuilderSpenderIndicator then self.options.otherBuilderSpend
     self.options.generalSub:SetText("Use /sfa as a shortcut to this page. Move unlocked blocks with Shift + drag.")
   end
 
-  if self.options.locked then self.options.locked:SetChecked(db.locked) end
-  if self.options.hideHeaders then self.options.hideHeaders:SetChecked(db.hideHeaders) end
   if self.options.minimapEnabled then self.options.minimapEnabled:SetChecked(db.minimap and db.minimap.enabled ~= false) end
   if self.options.redesignMacroWindow then self.options.redesignMacroWindow:SetChecked(db.other and db.other.redesignMacroWindow) end
   if self.options.otherQuestIndicator then self.options.otherQuestIndicator:SetChecked(db.other and db.other.showQuestIndicator) end
   if self.options.otherTargetXMark then self.options.otherTargetXMark:SetChecked(db.other and db.other.showTargetXMark) end
   if self.options.otherCharacterGCD then self.options.otherCharacterGCD:SetChecked(db.other and db.other.showCharacterGCD ~= false) end
-  if self.options.simulationEnabled then self.options.simulationEnabled:SetChecked(self:IsSimulationEnabled()) end
-
-local simMode = db.simulation and db.simulation.scenario or "arena3v3"
-local function syncSimRow(boxRef, xRef, yRef, mode)
-  local active = self:IsSimulationEnabled() and simMode == mode
-  if boxRef then boxRef:SetChecked(active) end
-  if xRef or yRef then
-    local p = self:GetFriendlyScenarioPoint(mode)
-    if xRef and p then xRef:SetText(tostring(p.x or 0)) end
-    if yRef and p then yRef:SetText(tostring(p.y or 0)) end
-  end
-end
-syncSimRow(self.options.simRowWorld, self.options.simRowWorldX, self.options.simRowWorldY, "world")
-syncSimRow(self.options.simRowArena, self.options.simRowArenaX, self.options.simRowArenaY, "arena3v3")
-syncSimRow(self.options.simRowDungeon, self.options.simRowDungeonX, self.options.simRowDungeonY, "dungeon")
-syncSimRow(self.options.simRowRaid10, self.options.simRowRaid10X, self.options.simRowRaid10Y, "raid10")
-syncSimRow(self.options.simRowRaid25, self.options.simRowRaid25X, self.options.simRowRaid25Y, "raid25")
-
-  if self.options.friendlyEnabled then self.options.friendlyEnabled:SetChecked(self:GetCharEnabled("friendly")) end
-  if self.options.friendlyDebuffs then self.options.friendlyDebuffs:SetChecked(db.friendly.showDebuffs) end
-  if self.options.enemyEnabled then self.options.enemyEnabled:SetChecked(self:GetCharEnabled("enemy")) end
-  if self.options.enemyDebuffs then self.options.enemyDebuffs:SetChecked(db.enemy.showDebuffs) end
-  if self.options.enemyHealer then self.options.enemyHealer:SetChecked(db.enemy.healerMarker) end
-  if self.options.enemyClass then self.options.enemyClass:SetChecked(db.enemy.classColor) end
-  if self.options.friendlyClass then self.options.friendlyClass:SetChecked(db.friendly.classColor) end
-  if self.options.friendlyAutoShrink then self.options.friendlyAutoShrink:SetChecked(db.friendly.autoShrinkLargeGroups) end
-  if self.options.friendlyMyHotsOnly then self.options.friendlyMyHotsOnly:SetChecked(db.friendly.showMyHotsOnly) end
-  if self.options.friendlyHideBlizzardRaid then self.options.friendlyHideBlizzardRaid:SetChecked(db.friendly.hideBlizzardRaidFrames) end
-
-  local mode = db.enemy.targetColor or "medium"
-  local text = mode == "none" and "None" or mode == "soft" and "Soft" or mode == "subtle" and "Foarte discret" or "Mediu"
-  if self.options.targetColorDropDown then
-    UIDropDownMenu_SetText(self.options.targetColorDropDown, text)
-  end
+  if self.options.debugEnabled then self.options.debugEnabled:SetChecked(SFA.auraDebug) end
+  if self.RefreshDebugLogDisplay then self:RefreshDebugLogDisplay() end
 
   -- Refresh per-spec click macro displays + spec name labels.
   local specName = self:GetCurrentSpecName()
@@ -1109,70 +1034,75 @@ syncSimRow(self.options.simRowRaid25, self.options.simRowRaid25X, self.options.s
     setLabel(section.leftClick)
     setLabel(section.rightClick)
     setLabel(section.middleClick)
+    if section.disableBox then section.disableBox:SetChecked(not self:GetCharEnabled(group)) end
   end
   syncMacroDisplays(self.options.friendlySection, "friendly")
   syncMacroDisplays(self.options.enemySection, "enemy")
 end
 
+-- 0.25.0 redesign: this tab used to configure this addon's own rendered
+-- frames (enable/debuffs/width/height/scale/spacing) -- all gone now that
+-- the addon only applies click-cast macros to Blizzard's native frames.
+-- All that's left is the three per-spec macro boxes.
 function SFA:BuildGroupSection(parent, group, left, top)
-  local db = self.db[group]
   local title = CreateSectionHeader(parent, group == "friendly" and "Friendly Frames" or "Enemy Frames", left, top)
 
-  local y = top - 34
-  local enabled = CreateCheckbox(parent, "Enable", left, y, self:GetCharEnabled(group), function(val)
-    self:SetCharEnabled(group, val)
-    self:RefreshGroup(group)
-  end)
-  y = y - 30
+  -- 0.25.9: lets the user see Blizzard's native right-click menu (Set
+  -- Focus, Target Marker Icon, PvP, etc) again on demand, without having
+  -- to disable the whole addon -- user-requested (2026-09-01) after
+  -- needing to disable the addon entirely just to see what the native
+  -- menus actually look like. Wired through the existing (previously
+  -- orphaned since the 0.25.0 redesign) GetCharEnabled/SetCharEnabled
+  -- per-character flags.
+  -- 0.25.12 layout fix: the checkbox's own label used to carry the full
+  -- "requires Reload UI" explanation, and the Reload button sat far to the
+  -- right (left + 560) -- both got clipped/cut off on a normal (non-
+  -- maximized) options window, same class of bug as the arena/friendly
+  -- debug buttons before them (see the 0.24.38 note on those). Following
+  -- that same fix: short checkbox label, explanation on its own wrapped
+  -- line below, button on its own row at the safe left-aligned x=left --
+  -- nothing placed far enough right to risk falling off the edge again.
+  local disableBox = CreateCheckbox(parent, "Disable click-cast for this group",
+    left, top - 20, not self:GetCharEnabled(group), function(checked)
+      self:SetCharEnabled(group, not checked)
+      self:ApplyAllNativeClickBindings()
+    end)
 
-  local debuffs = CreateCheckbox(parent, group == "friendly" and "Show buff/debuff icons" or "Show debuff icons", left, y, db.showDebuffs, function(val)
-    db.showDebuffs = val
-    self:RefreshGroup("friendly")
-    self:RefreshGroup("enemy")
-    self:QueueRefresh()
-  end)
-  y = y - 42
+  local disableHint = CreateLabel(parent,
+    "Restores Blizzard's native clicks/menu -- only takes full effect on a frame not yet touched this session, so click Reload UI after checking this.",
+    left, top - 44, "GameFontHighlightSmall")
+  disableHint:SetWidth(600)
+  disableHint:SetWordWrap(true)
+  disableHint:SetJustifyH("LEFT")
 
-  local widthSlider = CreateSlider(parent, "Width", left, y, 120, 280, 1, db.width, function(val)
-    db.width = val
-    if not InCombatLockdown() then self:ApplyLayout(group) else self.pendingLayout = true end
-  end)
-  y = y - 72
-
-  local heightSlider = CreateSlider(parent, "Height", left, y, 24, 60, 1, db.height, function(val)
-    db.height = val
-    if not InCombatLockdown() then self:ApplyLayout(group) else self.pendingLayout = true end
-  end)
-  y = y - 72
-
-  local scaleSlider = CreateSlider(parent, "Scale", left, y, 0.8, 1.4, 0.1, db.scale, function(val)
-    db.scale = val
-    if not InCombatLockdown() then self:ApplyLayout(group) else self.pendingLayout = true end
-  end)
-  y = y - 72
-
-  local spacingSlider = CreateSlider(parent, "Spacing", left, y, 0, 16, 1, db.spacing, function(val)
-    db.spacing = val
-    if not InCombatLockdown() then self:ApplyLayout(group) else self.pendingLayout = true end
+  -- 0.25.11: confirmed live (2026-09-01) that Blizzard only restores its
+  -- own native right-click menu on a frame this addon has NEVER touched
+  -- yet this session -- toggling the checkbox alone can't undo an already-
+  -- applied override, only a fresh reload can. This button saves having to
+  -- type /reload manually every time.
+  local disableReloadBtn = CreateButton(parent, "Reload UI now", left, top - 78, 130, 20, function()
+    ReloadUI()
   end)
 
-  local leftClick = CreateMacroEditBox(parent, "Left click macro", left, y - 82, 360, self:GetClickMacro(group,"LeftButton"), function(text)
+  local y = top - 112
+
+  local leftClick = CreateMacroEditBox(parent, "Left click macro", left, y, 360, self:GetClickMacro(group,"LeftButton"), function(text)
     self:SetClickMacro(group,"LeftButton",text)
-    self:RefreshGroup(group)
+    self:ApplyAllNativeClickBindings()
   end, function(text)
     self:SetClickMacro(group,"LeftButton",text)
   end)
 
-  local rightClick = CreateMacroEditBox(parent, "Right click macro", left, y - 82, 360, self:GetClickMacro(group,"RightButton"), function(text)
+  local rightClick = CreateMacroEditBox(parent, "Right click macro", left, y, 360, self:GetClickMacro(group,"RightButton"), function(text)
     self:SetClickMacro(group,"RightButton",text)
-    self:RefreshGroup(group)
+    self:ApplyAllNativeClickBindings()
   end, function(text)
     self:SetClickMacro(group,"RightButton",text)
   end)
 
-  local middleClick = CreateMacroEditBox(parent, "Middle click macro", left, y - 82, 360, self:GetClickMacro(group,"MiddleButton"), function(text)
+  local middleClick = CreateMacroEditBox(parent, "Middle click macro", left, y, 360, self:GetClickMacro(group,"MiddleButton"), function(text)
     self:SetClickMacro(group,"MiddleButton",text)
-    self:RefreshGroup(group)
+    self:ApplyAllNativeClickBindings()
   end, function(text)
     self:SetClickMacro(group,"MiddleButton",text)
   end)
@@ -1180,7 +1110,7 @@ function SFA:BuildGroupSection(parent, group, left, top)
   -- full stack layout for the macro area
   if leftClick.title then
     leftClick.title:ClearAllPoints()
-    leftClick.title:SetPoint("TOPLEFT", spacingSlider, "BOTTOMLEFT", 0, -28)
+    leftClick.title:SetPoint("TOPLEFT", parent, "TOPLEFT", left, y - 6)
   end
   if leftClick.bg then
     leftClick.bg:ClearAllPoints()
@@ -1219,12 +1149,7 @@ function SFA:BuildGroupSection(parent, group, left, top)
 
   return {
     title = title,
-    enabled = enabled,
-    debuffs = debuffs,
-    widthSlider = widthSlider,
-    heightSlider = heightSlider,
-    scaleSlider = scaleSlider,
-    spacingSlider = spacingSlider,
+    disableBox = disableBox,
     leftClick = leftClick,
     rightClick = rightClick,
     middleClick = middleClick,
@@ -1233,37 +1158,6 @@ function SFA:BuildGroupSection(parent, group, left, top)
     middleClickBG = middleClick.bg or middleClick.scrollFrame or middleClick,
     middleClickTip = middleClick.hint,
   }
-end
-
-function SFA:RefreshBlacklistUI()
-  if not self.options or not self.options.blacklistRows then return end
-  local ids = {}
-  for spellID, enabled in pairs(self.db.buffBlacklist or {}) do
-    if enabled then ids[#ids + 1] = tonumber(spellID) end
-  end
-  table.sort(ids)
-
-  for i, row in ipairs(self.options.blacklistRows) do
-    local spellID = ids[i]
-    if spellID then
-      local spellName = GetSpellNameSafe(spellID)
-      if spellName and spellName ~= "" then
-        row.label:SetText(string.format("%d (%s)", spellID, spellName))
-      else
-        row.label:SetText(tostring(spellID))
-      end
-      row.remove.spellID = spellID
-      row:Show()
-    else
-      row.label:SetText("")
-      row.remove.spellID = nil
-      row:Hide()
-    end
-  end
-
-  if self.options.blacklistEmpty then
-    self.options.blacklistEmpty:SetShown(#ids == 0)
-  end
 end
 
 function SFA:RefreshProcReadyUI()
@@ -1314,25 +1208,17 @@ function SFA:CreateOptionsPanel()
   root.sub = rootContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   root.sub:SetPoint("TOPLEFT", root.version, "BOTTOMLEFT", 0, -6)
   root.sub:SetJustifyH("LEFT")
-  root.sub:SetText("Use /sfa as a shortcut to this page. Move unlocked blocks with Shift + drag.")
+  root.sub:SetText("Use /sfa as a shortcut to this page.")
 
   local generalHeader = CreateSectionHeader(rootContent, "General", 18, -68)
-  local locked = CreateCheckbox(rootContent, "Lock frame blocks (move with Shift + drag when unlocked)", 24, -104, self.db.locked, function(val)
-    self.db.locked = val
-  end)
-  local hideHeaders = CreateCheckbox(rootContent, "Hide header text", 24, -136, self.db.hideHeaders, function(val)
-    self.db.hideHeaders = val
-    self:RefreshGroup("friendly")
-    self:RefreshGroup("enemy")
-  end)
-  local minimapEnabled = CreateCheckbox(rootContent, "Minimap button", 24, -168, self.db.minimap and self.db.minimap.enabled ~= false, function(val)
+  local minimapEnabled = CreateCheckbox(rootContent, "Minimap button", 24, -104, self.db.minimap and self.db.minimap.enabled ~= false, function(val)
     self.db.minimap = self.db.minimap or {}
     self.db.minimap.enabled = val
     if self.UpdateMinimapButtonPosition then self:UpdateMinimapButtonPosition() end
   end)
 
   -- v0.22.00: Redesign Macro Window
-  local redesignMacroWindow = CreateCheckbox(rootContent, "Redesign Macro Window (tabs: Global | Class | Character)", 24, -200,
+  local redesignMacroWindow = CreateCheckbox(rootContent, "Redesign Macro Window (tabs: Global | Class | Character)", 24, -136,
     self.db.other and self.db.other.redesignMacroWindow, function(val)
     self.db.other = self.db.other or {}
     self.db.other.redesignMacroWindow = val
@@ -1342,95 +1228,21 @@ function SFA:CreateOptionsPanel()
   end)
 
   local macroHint = rootContent:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  macroHint:SetPoint("TOPLEFT", 42, -224)
+  macroHint:SetPoint("TOPLEFT", 42, -160)
   macroHint:SetText("Use |cff88ddff/macro|r or |cff88ddff/sfamacro|r in chat to open the custom macro window.")
 
+  -- 0.25.0 redesign: this addon no longer renders its own unit frames --
+  -- it only applies the Left/Right/Middle click macros below (Friendly
+  -- Frame / Enemy Frame tabs) to whichever Blizzard-native frames are
+  -- already on screen (player/party/raid/target/focus for friendly, arena
+  -- for enemy), positioned wherever Blizzard's own Edit Mode puts them.
   local generalInfo = rootContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  generalInfo:SetPoint("TOPLEFT", 24, -252)
+  generalInfo:SetPoint("TOPLEFT", 24, -188)
   generalInfo:SetWidth(760)
   generalInfo:SetJustifyH("LEFT")
-  generalInfo:SetText("Use /sfa to open this page quickly. Move unlocked Friendly or Enemy blocks with Shift + drag. Positions are remembered separately for World, Arena, Party/Dungeon, Raid 10, and Raid 25. Macro text can use [@unit] and will be expanded automatically.")
+  generalInfo:SetText("Use /sfa to open this page quickly. This addon applies your Left/Right/Middle click macros (Friendly Frame / Enemy Frame tabs) directly to Blizzard's own frames -- it no longer renders its own. Macro text can use [@unit] and will be expanded automatically. Note: overriding Right-click removes Blizzard's normal right-click menu (Set Focus, Target Marker Icon, PvP, etc) on that frame -- holding Ctrl+Alt while right-clicking opens a small experimental menu (Whisper/Inspect) instead, while we work on restoring the full native one.")
 
-  local blacklistTop = -330
-  local blacklistHeader = CreateSectionHeader(rootContent, "Aura Blacklist", 18, blacklistTop)
-  local blacklistHelp = rootContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  blacklistHelp:SetPoint("TOPLEFT", 24, blacklistTop - 28)
-  blacklistHelp:SetWidth(780)
-  blacklistHelp:SetJustifyH("LEFT")
-  blacklistHelp:SetText("Add a buff/debuff by spell ID or exact spell name. Suggestions include your spellbook plus active external auras when Blizzard exposes a safe name; learned names are cached for PvP prep. Tip: Shift + Left Click an aura icon to add it instantly.")
-
-  local blacklistInput = CreateFrame("EditBox", nil, rootContent, "InputBoxTemplate")
-  blacklistInput:SetSize(220, 24)
-  blacklistInput:SetPoint("TOPLEFT", 24, blacklistTop - 62)
-  blacklistInput:SetAutoFocus(false)
-  blacklistInput:SetNumeric(false)
-
-  local blacklistHint = rootContent:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  blacklistHint:SetPoint("LEFT", blacklistInput, "RIGHT", 10, 0)
-  blacklistHint:SetWidth(260)
-  blacklistHint:SetJustifyH("LEFT")
-  blacklistHint:SetText("Spell ID or name")
-  blacklistInput.spellNameHint = blacklistHint
-
-  local autocomplete = CreateSpellAutocomplete(rootContent, blacklistInput)
-
-  local blacklistAdd = CreateButton(rootContent, "Add", 254, blacklistTop - 60, 70, 24, function()
-    local spellID, spellName = ResolveSpellInput(blacklistInput:GetText())
-    if spellID then
-      SFA:AddBuffToBlacklist(spellID)
-      blacklistInput:SetText("")
-      blacklistHint:SetText("Spell ID or name")
-      autocomplete:Hide()
-      blacklistInput:ClearFocus()
-    else
-      SFA.Print("Enter a valid spell ID or exact spell name.")
-      blacklistHint:SetText("No spell found")
-    end
-  end)
-
-  blacklistInput:SetScript("OnTextChanged", function(self)
-    local text = self:GetText()
-    local spellID, spellName = ResolveSpellInput(text)
-    if spellID and spellName then
-      blacklistHint:SetText(string.format("%s (%d)", spellName, spellID))
-    else
-      blacklistHint:SetText("Spell ID or name")
-    end
-    autocomplete:Refresh(text)
-  end)
-  blacklistInput:SetScript("OnEscapePressed", function(self)
-    autocomplete:Hide()
-    self:ClearFocus()
-  end)
-  blacklistInput:SetScript("OnEnterPressed", function(self)
-    blacklistAdd:Click()
-  end)
-  local blacklistEmpty = rootContent:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  blacklistEmpty:SetPoint("TOPLEFT", 24, blacklistTop - 96)
-  blacklistEmpty:SetText("No blacklisted aura IDs yet.")
-
-  local blacklistRows = {}
-  for i = 1, 16 do
-    local row = CreateFrame("Frame", nil, rootContent)
-    row:SetSize(600, 20)
-    row:SetPoint("TOPLEFT", 24, blacklistTop - 96 - ((i - 1) * 22))
-
-    row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    row.label:SetPoint("LEFT", 0, 0)
-    row.label:SetWidth(460)
-    row.label:SetJustifyH("LEFT")
-
-    row.remove = CreateButton(row, "Remove", 470, 10, 80, 18, function(btn)
-      if btn.spellID then
-        SFA:RemoveBuffFromBlacklist(btn.spellID)
-      end
-    end)
-    row.remove:SetPoint("LEFT", row, "LEFT", 470, 0)
-
-    row:Hide()
-    blacklistRows[#blacklistRows + 1] = row
-  end
-  rootContent:SetHeight(812)
+  rootContent:SetHeight(260)
 
   local otherPanel = CreateCanvasFrame(addonName .. "OptionsOther")
   otherPanel.OnRefresh = function() C_Timer.After(0, function() if SFA and SFA.RefreshOptionsPanel then SFA:RefreshOptionsPanel() end end) end
@@ -1444,7 +1256,7 @@ function SFA:CreateOptionsPanel()
   local otherHeader = CreateSectionHeader(otherContent, "Smart Assist", 18, -68)
   local otherTargetXMark = CreateCheckbox(otherContent, "Show X mark on enemy target frame", 24, -104, self.db.other and self.db.other.showTargetXMark, function(val)
     self.db.other.showTargetXMark = val
-    self:RefreshGroup("enemy")
+    self:RefreshEnemyNameplateOverlays()
   end)
   local otherCharacterGCD = CreateCheckbox(otherContent, "Show Estimated / One-Button GCD under Character window", 24, -140, self.db.other.showCharacterGCD ~= false, function(val)
     self.db.other.showCharacterGCD = val
@@ -1582,105 +1394,132 @@ function SFA:CreateOptionsPanel()
 
   otherContent:SetHeight(920)
 
-local simulationPanel = CreateCanvasFrame(addonName .. "OptionsSimulation")
--- OnRefresh is called by WoW's SettingsPanel when this subcategory is displayed
-simulationPanel.OnRefresh = function() C_Timer.After(0, function() if SFA and SFA.RefreshOptionsPanel then SFA:RefreshOptionsPanel() end end) end
-local simulationContent = simulationPanel.content
-local simulationTitle = simulationContent:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-simulationTitle:SetPoint("TOPLEFT", 18, -10)
-simulationTitle:SetText("Simple Frame Assistant")
-local simulationSub = simulationContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-simulationSub:SetPoint("TOPLEFT", simulationTitle, "BOTTOMLEFT", 0, -6)
-simulationSub:SetText("Simulation and testing. Test mode resets to OFF after reload/relog.")
+-- ---------------------------------------------------------------------
+-- Debug panel: enable/disable chat debug prints, reload the UI, and view
+-- or clear the persisted diagnostic log (SFA_DebugLog -- see Core.lua).
+-- That log survives to disk on /reload or logout under the account's
+-- SavedVariables folder, but this panel lets it be read/cleared in-game
+-- too, without needing to dig through files.
+-- ---------------------------------------------------------------------
+local debugPanel = CreateCanvasFrame(addonName .. "OptionsDebug")
+debugPanel.OnRefresh = function() C_Timer.After(0, function() if SFA and SFA.RefreshOptionsPanel then SFA:RefreshOptionsPanel() end end) end
+-- Belt-and-suspenders: also refresh directly on this specific panel's
+-- OnShow, in case the Settings canvas system's OnRefresh callback doesn't
+-- always fire on every tab switch/reopen.
+debugPanel:HookScript("OnShow", function()
+  C_Timer.After(0, function() if SFA and SFA.RefreshDebugLogDisplay then SFA:RefreshDebugLogDisplay() end end)
+end)
+local debugContent = debugPanel.content
+local debugTitle = debugContent:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+debugTitle:SetPoint("TOPLEFT", 18, -10)
+debugTitle:SetText("Simple Frame Assistant")
+local debugSub = debugContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+debugSub:SetPoint("TOPLEFT", debugTitle, "BOTTOMLEFT", 0, -6)
+debugSub:SetText("Diagnostic tools. The log is also saved to disk (SavedVariables) and survives /reload or logout.")
 
-local simulationHeader = CreateSectionHeader(simulationContent, "Simulation / Testing", 18, -68)
-local simulationEnabled = CreateCheckbox(simulationContent, "Enable test mode", 24, -104, self:IsSimulationEnabled(), function(val)
-  self:SetSimulationEnabled(val)
-  self:RefreshOptionsPanel()
+local debugHeader = CreateSectionHeader(debugContent, "Debug", 18, -68)
+
+local debugEnabled = CreateCheckbox(debugContent, "Enable aura debug (prints details to chat, same as /sfaauradebug)", 24, -104, SFA.auraDebug, function(val)
+  SFA:SetAuraDebug(val)
 end)
 
-local simulationTableTitle = CreateLabel(simulationContent, "Friendly simulation layouts", 24, -156, "GameFontHighlight")
-local simulationTableSub = simulationContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-simulationTableSub:SetPoint("TOPLEFT", 24, -176)
-simulationTableSub:SetWidth(780)
-simulationTableSub:SetJustifyH("LEFT")
-simulationTableSub:SetText("Check one row to preview that Friendly layout. Edit X and Y directly to set the stored position for the matching real layout.")
+local debugReloadBtn = CreateButton(debugContent, "Reload UI", 24, -140, 120, 22, function()
+  ReloadUI()
+end)
+local debugShowBtn = CreateButton(debugContent, "Show log lines", 154, -140, 140, 22, function()
+  if SFA.RefreshDebugLogDisplay then SFA:RefreshDebugLogDisplay() end
+end)
+local debugClearBtn = CreateButton(debugContent, "Clear log", 304, -140, 100, 22, function()
+  SFA_DebugLog = {}
+  if SFA.RefreshDebugLogDisplay then SFA:RefreshDebugLogDisplay() end
+end)
 
-local simulationHeaderMode = CreateLabel(simulationContent, "Mode", 24, -210, "GameFontHighlightSmall")
-local simulationHeaderShow = CreateLabel(simulationContent, "Show", 210, -210, "GameFontHighlightSmall")
-local simulationHeaderX = CreateLabel(simulationContent, "X", 280, -210, "GameFontHighlightSmall")
-local simulationHeaderY = CreateLabel(simulationContent, "Y", 360, -210, "GameFontHighlightSmall")
+-- Buttons for the two arena-frame diagnostics (SFA:ScanArenaFrames /
+-- SFA:DumpArenaFrameAttributes, both in Core.lua). Added as clickable
+-- buttons -- not just /run-callable -- because the typed slash-command
+-- path proved unreliable in testing (WoW's own chat autocomplete dropdown
+-- can swallow Enter for /sfascanarena; and relying on the player to type
+-- /run commands in the right order after every /reload led to several
+-- rounds of "nothing happened" that turned out to be a stale-code or
+-- debug-toggle mixup rather than an addon bug). A button removes all of
+-- that -- it always calls the currently-loaded function directly and
+-- shows a chat confirmation immediately.
+-- 0.24.38: these two used to sit on the same row as Reload/Show/Clear,
+-- extending out past x=750 -- wide enough that on a normal (non-maximized)
+-- options window the "Dump arena click attrs" button landed off the edge
+-- of the visible panel with no way to scroll right to reach it (user
+-- screenshot, 2026-08-31). Moved to their own row so every button stays
+-- reachable regardless of window width.
+local debugArenaScanBtn = CreateButton(debugContent, "Scan arena frames", 24, -172, 150, 22, function()
+  if SFA.ScanArenaFrames then SFA:ScanArenaFrames() end
+end)
+local debugArenaAttrBtn = CreateButton(debugContent, "Dump arena click attrs", 184, -172, 180, 22, function()
+  if SFA.DumpArenaFrameAttributes then SFA:DumpArenaFrameAttributes() end
+end)
 
-local function simulationScenarioRow(y, mode, label)
-  local key = self:GetFriendlyScenarioKeyForMode(mode)
-  local point = self:GetFriendlyScenarioPoint(mode)
+-- 0.25.0 redesign step 1/2: friendly-frame equivalents of the arena scan/
+-- dump buttons above, for diagnosing native click-cast on party/raid/
+-- player/target/focus frames.
+local debugFriendlyScanBtn = CreateButton(debugContent, "Scan friendly frames", 24, -202, 170, 22, function()
+  if SFA.ScanFriendlyFrames then SFA:ScanFriendlyFrames() end
+end)
+local debugFriendlyAttrBtn = CreateButton(debugContent, "Dump friendly click attrs", 204, -202, 200, 22, function()
+  if SFA.DumpFriendlyFrameAttributes then SFA:DumpFriendlyFrameAttributes() end
+end)
 
-  local name = CreateLabel(simulationContent, label, 24, y, "GameFontHighlightSmall")
-  local enabled = (self:IsSimulationEnabled() and self:GetSimulationScenario() == mode)
+-- 0.25.7: diagnostic for the Ctrl+Alt+RightClick menu experiment -- lists
+-- the real Menu/MenuUtil API on this client into the debug log (read-only,
+-- no side effects). See SFA:DumpMenuAPI / SFA_OnManagedFrameClick in Core.lua.
+local debugMenuApiBtn = CreateButton(debugContent, "Dump menu API", 24, -234, 150, 22, function()
+  if SFA.DumpMenuAPI then SFA:DumpMenuAPI() end
+end)
 
-  local box = CreateCheckbox(simulationContent, "", 218, y + 2, enabled, function(val)
-    if val then
-      self.db.simulation.scenario = mode
-      self.session = self.session or {}
-      self.session.simulationProfile = nil
-      self:SetSimulationEnabled(true)
-    else
-      if self:IsSimulationEnabled() and self:GetSimulationScenario() == mode then
-        self:SetSimulationEnabled(false)
-      end
-    end
-    self:RefreshOptionsPanel()
-  end)
+local debugLogCountLabel = CreateLabel(debugContent, "", 24, -264, "GameFontHighlightSmall")
 
-  local xBox = CreateNumberInput(simulationContent, 280, y + 4, 56, point and point.x or 0, function(val)
-    local p = self:GetFriendlyScenarioPoint(mode)
-    if p then
-      p.x = val
-      if self:IsSimulationEnabled() and self:GetSimulationScenario() == mode and not InCombatLockdown() then
-        self:ApplyLayout("friendly")
-        self:RefreshGroup("friendly")
-      end
-      if self.RefreshSimulationPositionInputs then self:RefreshSimulationPositionInputs() end
-    end
-  end)
-  -- HookScript fires AFTER InputBoxTemplate's own OnShow (which resets the text),
-  -- so our value is always the last thing written.
-  xBox:HookScript("OnShow", function(box)
-    local p = self:GetFriendlyScenarioPoint(mode)
-    if p then box:SetText(tostring(p.x or 0)) end
-  end)
-
-  local yBox = CreateNumberInput(simulationContent, 360, y + 4, 56, point and point.y or 0, function(val)
-    local p = self:GetFriendlyScenarioPoint(mode)
-    if p then
-      p.y = val
-      if self:IsSimulationEnabled() and self:GetSimulationScenario() == mode and not InCombatLockdown() then
-        self:ApplyLayout("friendly")
-        self:RefreshGroup("friendly")
-      end
-      if self.RefreshSimulationPositionInputs then self:RefreshSimulationPositionInputs() end
-    end
-  end)
-  yBox:HookScript("OnShow", function(box)
-    local p = self:GetFriendlyScenarioPoint(mode)
-    if p then box:SetText(tostring(p.y or 0)) end
-  end)
-
-  return name, box, xBox, yBox
+local debugLogBG = CreateFrame("Frame", nil, debugContent, "BackdropTemplate")
+debugLogBG:SetPoint("TOPLEFT", 24, -284)
+debugLogBG:SetSize(780, 480)
+if debugLogBG.SetBackdrop then
+  debugLogBG:SetBackdrop({
+    bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+    edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+    tile = true, tileSize = 8, edgeSize = 8,
+    insets = { left = 2, right = 2, top = 2, bottom = 2 },
+  })
+  debugLogBG:SetBackdropColor(0.02, 0.02, 0.04, 0.95)
+  debugLogBG:SetBackdropBorderColor(0.25, 0.25, 0.35, 0.8)
 end
 
-local simRowWorldLabel, simRowWorld, simRowWorldX, simRowWorldY = simulationScenarioRow(-236, "world", "World")
-local simRowArenaLabel, simRowArena, simRowArenaX, simRowArenaY = simulationScenarioRow(-268, "arena3v3", "Arena 3v3")
-local simRowDungeonLabel, simRowDungeon, simRowDungeonX, simRowDungeonY = simulationScenarioRow(-300, "dungeon", "Dungeon / Party")
-local simRowRaid10Label, simRowRaid10, simRowRaid10X, simRowRaid10Y = simulationScenarioRow(-332, "raid10", "Raid 10")
-local simRowRaid25Label, simRowRaid25, simRowRaid25X, simRowRaid25Y = simulationScenarioRow(-364, "raid25", "Raid 25")
+local debugLogScroll = CreateFrame("ScrollFrame", nil, debugLogBG, "UIPanelScrollFrameTemplate")
+debugLogScroll:SetPoint("TOPLEFT", 4, -4)
+debugLogScroll:SetPoint("BOTTOMRIGHT", -26, 4)
 
-local simulationHelp = simulationContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-simulationHelp:SetPoint("TOPLEFT", 24, -408)
-simulationHelp:SetWidth(780)
-simulationHelp:SetJustifyH("LEFT")
-simulationHelp:SetText("Simulation mirrors the real layouts: World, Arena 3v3, Dungeon / Party, Raid 10, and Raid 25. Friendly positions are edited directly here and used by the matching real context. Enemy stays target-only outside arena. Move unlocked blocks with Shift + drag.")
-simulationContent:SetHeight(500)
+local debugLogEdit = CreateFrame("EditBox", nil, debugLogScroll)
+debugLogEdit:SetMultiLine(true)
+debugLogEdit:SetAutoFocus(false)
+debugLogEdit:SetFontObject("GameFontHighlightSmall")
+debugLogEdit:SetWidth(750)
+debugLogEdit:SetHeight(480)
+debugLogEdit:SetMaxLetters(0)
+debugLogEdit:SetTextInsets(4, 4, 4, 4)
+debugLogEdit:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+debugLogScroll:SetScrollChild(debugLogEdit)
+
+debugContent:SetHeight(792)
+
+-- Populates the log text box from SFA_DebugLog. Called by the "Show log
+-- lines" / "Clear log" buttons, and once automatically whenever the Debug
+-- subcategory is displayed (via OnRefresh above -> RefreshOptionsPanel).
+function SFA:RefreshDebugLogDisplay()
+  if not self.options or not self.options.debugLogEdit then return end
+  local lines = SFA_DebugLog or {}
+  self.options.debugLogEdit:SetText(table.concat(lines, "\n"))
+  self.options.debugLogEdit:SetCursorPosition(0)
+  self.options.debugLogEdit:SetHeight(math.max(#lines * 14, 480))
+  if self.options.debugLogCountLabel then
+    self.options.debugLogCountLabel:SetText(#lines .. " log line(s), oldest first.")
+  end
+end
 
 local friendlyPanel = CreateCanvasFrame(addonName .. "OptionsFriendly")
 friendlyPanel.OnRefresh = function() C_Timer.After(0, function() if SFA and SFA.RefreshOptionsPanel then SFA:RefreshOptionsPanel() end end) end
@@ -1695,45 +1534,7 @@ friendlyPanel.OnRefresh = function() C_Timer.After(0, function() if SFA and SFA.
   friendlySpecLabel:SetPoint("TOPLEFT", friendlySub, "BOTTOMLEFT", 0, -4)
   friendlySpecLabel:SetText("|cff7cc6ffClick macros are saved per specialization.|r")
 local friendlySection = self:BuildGroupSection(friendlyContent, "friendly", 24, -68)
-local friendlyClass = CreateCheckbox(friendlyContent, "Class color health bar", 24, -774, self.db.friendly.classColor, function(val)
-  self.db.friendly.classColor = val
-  self:RefreshGroup("friendly")
-  self:RefreshGroup("enemy")
-  self:QueueRefresh()
-end)
-local friendlyAutoShrink = CreateCheckbox(friendlyContent, "Auto shrink in large groups", 24, -810, self.db.friendly.autoShrinkLargeGroups, function(val)
-  self.db.friendly.autoShrinkLargeGroups = val
-  self:ApplyLayout("friendly")
-  self:QueueRefresh()
-end)
-local friendlyMyHotsOnly = CreateCheckbox(friendlyContent, "Show my HoTs only", 24, -882, self.db.friendly.showMyHotsOnly, function(val)
-  self.db.friendly.showMyHotsOnly = val
-  self:RefreshGroup("friendly")
-end)
-local friendlyHideBlizzardRaid = CreateCheckbox(friendlyContent, "Hide Blizzard raid frames", 24, -918, self.db.friendly.hideBlizzardRaidFrames, function(val)
-  self.db.friendly.hideBlizzardRaidFrames = val
-  if not InCombatLockdown() then
-    self:ApplyBlizzardRaidFramesVisibility()
-  else
-    self.pendingLayout = true
-  end
-end)
-local friendlyLargeScale = CreateSlider(friendlyContent, "Large group scale", 24, -964, 0.50, 1.00, 0.05, self.db.friendly.largeGroupScale or 0.85, function(val)
-  self.db.friendly.largeGroupScale = val
-  self:ApplyLayout("friendly")
-  self:QueueRefresh()
-end)
-
--- Full auto layout below macro boxes
-do
-  local anchor = friendlySection.middleClickTip or friendlySection.middleClickBG or friendlySection.middleClick
-  StackBelow(friendlyClass, anchor, 16)
-  StackBelow(friendlyAutoShrink, friendlyClass, 10)
-  StackBelow(friendlyMyHotsOnly, friendlyAutoShrink, 10)
-  StackBelow(friendlyHideBlizzardRaid, friendlyMyHotsOnly, 10)
-  StackBelow(friendlyLargeScale, friendlyHideBlizzardRaid, 18)
-end
-friendlyContent:SetHeight(1260)
+friendlyContent:SetHeight(498)
 
   local enemyPanel = CreateCanvasFrame(addonName .. "OptionsEnemy")
   enemyPanel.OnRefresh = function() C_Timer.After(0, function() if SFA and SFA.RefreshOptionsPanel then SFA:RefreshOptionsPanel() end end) end
@@ -1748,18 +1549,7 @@ friendlyContent:SetHeight(1260)
   enemySpecLabel:SetPoint("TOPLEFT", enemySub, "BOTTOMLEFT", 0, -4)
   enemySpecLabel:SetText("|cff7cc6ffClick macros are saved per specialization.|r")
 local enemySection = self:BuildGroupSection(enemyContent, "enemy", 24, -68)
-local enemyClass = CreateCheckbox(enemyContent, "Class color health bar", 24, -774, self.db.enemy.classColor, function(val)
-  self.db.enemy.classColor = val
-  self:RefreshGroup("friendly")
-  self:RefreshGroup("enemy")
-  self:QueueRefresh()
-end)
-
-do
-  local anchor = enemySection.middleClickTip or enemySection.middleClickBG or enemySection.middleClick
-  StackBelow(enemyClass, anchor, 16)
-end
-  enemyContent:SetHeight(1200)
+enemyContent:SetHeight(498)
 
 if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOnCategory and Settings.RegisterCanvasLayoutSubcategory then
     local category = Settings.RegisterCanvasLayoutCategory(root, "Simple Frame Assistant")
@@ -1771,7 +1561,7 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
     Settings.RegisterCanvasLayoutSubcategory(category, friendlyPanel, "Friendly Frame")
     Settings.RegisterCanvasLayoutSubcategory(category, enemyPanel, "Enemy Frame")
     Settings.RegisterCanvasLayoutSubcategory(category, otherPanel, "Smart Assist")
-    Settings.RegisterCanvasLayoutSubcategory(category, simulationPanel, "Simulation")
+    Settings.RegisterCanvasLayoutSubcategory(category, debugPanel, "Debug")
     self.settingsGeneralSubcategory = generalSubcategory
   end
 
@@ -1790,63 +1580,19 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
     procReadyInput = procReadyInput,
     procReadyRows = procReadyRows,
     procReadyEmpty = procReadyEmpty,
-	otherBuilderSpenderIndicator = otherBuilderSpenderIndicator,
-    simulationEnabled = simulationEnabled,
-    simRowWorld = simRowWorld,
-    simRowWorldX = simRowWorldX,
-    simRowWorldY = simRowWorldY,
-    simRowArena = simRowArena,
-    simRowArenaX = simRowArenaX,
-    simRowArenaY = simRowArenaY,
-    simRowDungeon = simRowDungeon,
-    simRowDungeonX = simRowDungeonX,
-    simRowDungeonY = simRowDungeonY,
-    simRowRaid10 = simRowRaid10,
-    simRowRaid10X = simRowRaid10X,
-    simRowRaid10Y = simRowRaid10Y,
-    simRowRaid25 = simRowRaid25,
-    simRowRaid25X = simRowRaid25X,
-    simRowRaid25Y = simRowRaid25Y,
-    blacklistInput = blacklistInput,
-    blacklistRows = blacklistRows,
-    blacklistEmpty = blacklistEmpty,
-    friendlyEnabled = friendlySection.enabled,
-    friendlyDebuffs = friendlySection.debuffs,
-    enemyEnabled = enemySection.enabled,
-    enemyDebuffs = enemySection.debuffs,
+    otherBuilderSpenderIndicator = otherBuilderSpenderIndicator,
     friendlySection = friendlySection,
     enemySection = enemySection,
     friendlySpecLabel = friendlySpecLabel,
     enemySpecLabel = enemySpecLabel,
-    enemyClass = enemyClass,
-    friendlyClass = friendlyClass,
-    friendlyAutoShrink = friendlyAutoShrink,
-    friendlyMyHotsOnly = friendlyMyHotsOnly,
-    friendlyHideBlizzardRaid = friendlyHideBlizzardRaid,
-    targetColorDropDown = targetDropDown,
-	
+    debugEnabled = debugEnabled,
+    debugLogEdit = debugLogEdit,
+    debugLogCountLabel = debugLogCountLabel,
   }
 
-  -- Expose a targeted refresh just for the simulation position inputs,
-  -- called by the X/Y onCommit callbacks after the user types a value.
-  self.RefreshSimulationPositionInputs = function()
-    if not self.options then return end
-    local db = self.db
-    local function syncXY(xRef, yRef, mode)
-      local p = self:GetFriendlyScenarioPoint(mode)
-      if not p then return end
-      if xRef then xRef:SetText(tostring(p.x or 0)) end
-      if yRef then yRef:SetText(tostring(p.y or 0)) end
-    end
-    syncXY(self.options.simRowWorldX,   self.options.simRowWorldY,   "world")
-    syncXY(self.options.simRowArenaX,   self.options.simRowArenaY,   "arena3v3")
-    syncXY(self.options.simRowDungeonX, self.options.simRowDungeonY, "dungeon")
-    syncXY(self.options.simRowRaid10X,  self.options.simRowRaid10Y,  "raid10")
-    syncXY(self.options.simRowRaid25X,  self.options.simRowRaid25Y,  "raid25")
-  end
+  if self.RefreshDebugLogDisplay then self:RefreshDebugLogDisplay() end
 
   self:RefreshOptionsPanel()
-  self:RefreshBlacklistUI()
   self:RefreshProcReadyUI()
 end
 
@@ -1885,31 +1631,40 @@ function SFA:RegisterSlash()
     SFA.procReadyDebug = not SFA.procReadyDebug
     DEFAULT_CHAT_FRAME:AddMessage("|cff7cc6ffSFA:|r proc debug " .. (SFA.procReadyDebug and "ON" or "OFF"))
   end
+
+  -- Toggle aura debug: prints (at most once/sec) exactly what
+  -- C_UnitAuras.GetAuraDataByIndex returned for the first buff/debuff slot
+  -- checked -- whether the call failed, legitimately found nothing, or
+  -- succeeded but with icon/spellId/name fields coming back as secret
+  -- values. Used to diagnose buffs/debuffs vanishing in combat.
+  SLASH_SFAAURADEBUG1 = "/sfaauradebug"
+  SlashCmdList.SFAAURADEBUG = function()
+    SFA:SetAuraDebug(not SFA.auraDebug)
+    DEFAULT_CHAT_FRAME:AddMessage("|cff7cc6ffSFA:|r aura debug " .. (SFA.auraDebug and "ON" or "OFF"))
+  end
+
+  -- Clears the persisted diagnostic log (SFA_DebugLog, a SavedVariable --
+  -- readable on disk in the account's SavedVariables folder after a
+  -- /reload or logout) so a fresh repro run starts from an empty log.
+  SLASH_SFACLEARLOG1 = "/sfaclearlog"
+  SlashCmdList.SFACLEARLOG = function()
+    SFA_DebugLog = {}
+    DEFAULT_CHAT_FRAME:AddMessage("|cff7cc6ffSFA:|r debug log cleared")
+  end
+
+  -- One-off diagnostic: scans all UI frames for anything that looks like
+  -- the native Blizzard arena-enemy frame (Midnight renamed/restructured
+  -- the old ArenaEnemyFrame1-5 globals). Requires aura debug ON (Debug tab
+  -- or /sfaauradebug) for the per-frame results to be written to the log --
+  -- the summary line always prints to chat regardless.
+  SLASH_SFASCANARENA1 = "/sfascanarena"
+  SlashCmdList.SFASCANARENA = function()
+    if SFA.ScanArenaFrames then
+      SFA:ScanArenaFrames()
+    end
+  end
 end
 
 
 
 
-local function SFA_CreateStandardRoleOptions(parent, anchor, groupKey)
-    local healer = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
-    healer:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -8)
-    healer.text:SetText("Show healer icon")
-    healer:SetChecked(SFA.db[groupKey].showHealerIcon ~= false)
-    healer:SetScript("OnClick", function(self)
-        SFA.db[groupKey].showHealerIcon = self:GetChecked()
-        SFA:RefreshGroup(groupKey)
-    end)
-
-    local tank = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
-    tank:SetPoint("TOPLEFT", healer, "BOTTOMLEFT", 0, -6)
-    tank.text:SetText("Show tank icon")
-    tank:SetChecked(SFA.db[groupKey].showTankIcon ~= false)
-    tank:SetScript("OnClick", function(self)
-        SFA.db[groupKey].showTankIcon = self:GetChecked()
-        SFA:RefreshGroup(groupKey)
-    end)
-
-    return tank
-end
-
--- Added Other option: Show enemy spec icon above frame

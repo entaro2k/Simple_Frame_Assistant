@@ -2,16 +2,14 @@ local addonName, SFA = ...
 SFA = SFA or {}
 _G[addonName] = SFA
 
+-- 0.25.0 redesign: this addon no longer renders its own unit frames, so
+-- the defaults below only cover what's left -- Smart Assist settings, the
+-- minimap button, and the friendly/enemy per-spec click macros (applied
+-- to Blizzard's own native frames). Everything about SFA's own frame
+-- layout, simulation, and the aura blacklist has been removed.
 SFA.defaults = {
-  locked = false,
-  panel = {
-    width = 940,
-    height = 940,
-  },
-  buffBlacklist = {},
   spellNameCache = {},
   macroIconExplicit = {},
-  hideHeaders = false,
   minimap = {
     enabled = true,
     angle = 220,
@@ -20,7 +18,7 @@ SFA.defaults = {
     showQuestIndicator = false,
     showTargetXMark = false,
     showCharacterGCD = true,
-	showBuilderSpenderIndicator = true,
+    showBuilderSpenderIndicator = true,
     redesignMacroWindow = false,
     resourceVoiceAlerts = {
       enabled = false,
@@ -33,67 +31,20 @@ SFA.defaults = {
       spells = {},
     },
   },
-  simulation = {
-    enabled = false,
-    scenario = "arena3v3",
+  friendly = {
+    clicks = {
+      LeftButton = "/target [@unit]",
+      RightButton = "/cast [@unit,help,nodead] Rejuvenation",
+      MiddleButton = "/cast [@unit,help,nodead] Remove Corruption",
+    },
   },
-friendly = {
-  enabled = true,
-  classColor = true,
-  showDebuffs = true,
-  showHealerIcon = true,
-  showTankIcon = true,
-  width = 180,
-  height = 34,
-  scale = 1.0,
-  spacing = 6,
-  point = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 },
-  scenarioPoints = {
-    smallGroup = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 },
-    world     = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 },
-    arena     = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 },
-    dungeon   = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 },
-    raid10    = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 },
-    raid25    = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = -260, y = -40 },
+  enemy = {
+    clicks = {
+      LeftButton = "/target [@unit]",
+      RightButton = "/cast [@unit,harm,nodead] Cyclone",
+      MiddleButton = "/cast [mod:alt,@unit,harm,nodead] Soothe; [@unit,harm,nodead] Skull Bash",
+    },
   },
-  units = { "player", "party1", "party2", "party3", "party4" },
-  autoShrinkLargeGroups = true,
-  largeGroupScale = 0.85,
-  showMyHotsOnly = false,
-  hideBlizzardRaidFrames = false,
-  clicks = {
-    LeftButton = "/target [@unit]",
-    RightButton = "/cast [@unit,help,nodead] Rejuvenation",
-    MiddleButton = "/cast [@unit,help,nodead] Remove Corruption",
-    Button4 = "",
-    Button5 = "",
-  },
-},
-enemy = {
-  enabled = true,
-  showDebuffs = true,
-  showHealerIcon = true,
-  showTankIcon = true,
-  width = 180,
-  height = 34,
-  scale = 1.0,
-  spacing = 6,
-  point = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = 260, y = -40 },
-  scenarioPoints = {
-    default = { anchor = "CENTER", relativeTo = "UIParent", relativePoint = "CENTER", x = 260, y = -40 },
-  },
-  units = { "arena1", "arena2", "arena3" },
-  healerMarker = true,
-  classColor = true,
-  clicks = {
-    LeftButton = "/target [@unit]",
-    RightButton = "/cast [@unit,harm,nodead] Cyclone",
-    MiddleButton = "/cast [mod:alt,@unit,harm,nodead] Soothe; [@unit,harm,nodead] Skull Bash",
-    Button4 = "",
-    Button5 = "",
-  },
-},
-
 }
 
 local function DeepCopy(src)
@@ -152,7 +103,7 @@ function SFA:InitializeDB()
   SFA_DB_Char.procReadyAlerts.cooldowns = SFA_DB_Char.procReadyAlerts.cooldowns or {}
 
   -- Merge defaults for clicks if not yet set per character
-  local defaultButtons = { "LeftButton", "RightButton", "MiddleButton", "Button4", "Button5" }
+  local defaultButtons = { "LeftButton", "RightButton", "MiddleButton" }
   for _, btn in ipairs(defaultButtons) do
     if SFA_DB_Char.clicks.friendly[btn] == nil then
       SFA_DB_Char.clicks.friendly[btn] = self.defaults.friendly.clicks[btn] or ""
@@ -162,13 +113,6 @@ function SFA:InitializeDB()
     end
   end
   self.charDB = SFA_DB_Char
-
-  self.session = self.session or {}
-  self.session.simulationEnabled = false
-  self.session.simulationProfile = nil
-  if self.db.simulation then
-    self.db.simulation.enabled = false
-  end
 end
 
 -- Returns a short human-readable label for the current spec, e.g.
