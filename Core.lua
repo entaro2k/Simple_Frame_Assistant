@@ -936,10 +936,26 @@ local function SFA_CondHasTarget(condBody)
   return false
 end
 
+-- 0.25.29: forces a "help"/"harm" requirement into a condition string,
+-- UNLESS the user's own condition already specifies a disposition (don't
+-- override an explicit choice). Used only when combining friendly+enemy
+-- macro lines onto the same button (see SFA_BuildReactiveDesired) -- see
+-- that function's comment for why this exists.
+local function SFA_InjectDisposition(inner, forceDisposition)
+  if not forceDisposition then return inner end
+  local lower = inner:lower()
+  if lower:find("help", 1, true) or lower:find("harm", 1, true) then
+    return inner -- already has an explicit disposition; respect it
+  end
+  if inner:match("^%s*$") then return forceDisposition end
+  return inner .. "," .. forceDisposition
+end
+
 -- Processes a single ";"-separated segment of a cast/use command,
 -- injecting @<unit> into any conditional that lacks a target,
 -- or prepending [@<unit>] when the segment has a spell but no conditional.
-local function SFA_ProcessSegment(seg, unit)
+-- forceDisposition (optional, "help"/"harm"): see SFA_InjectDisposition.
+local function SFA_ProcessSegment(seg, unit, forceDisposition)
   local leadWs = seg:match("^(%s*)") or ""
   local body = seg:sub(#leadWs + 1)
 
@@ -956,16 +972,18 @@ local function SFA_ProcessSegment(seg, unit)
   if #conds == 0 then
     -- No conditional. If there's an actual spell, bind it to the frame unit.
     if spell:match("%S") then
-      return leadWs .. "[@" .. unit .. "]" .. spell
+      local inner = "@" .. unit
+      if forceDisposition then inner = inner .. "," .. forceDisposition end
+      return leadWs .. "[" .. inner .. "]" .. spell
     end
     return seg
   end
 
   local rebuilt = {}
   for _, cond in ipairs(conds) do
-    local inner = cond:sub(2, -2) -- strip [ ]
+    local inner = SFA_InjectDisposition(cond:sub(2, -2), forceDisposition) -- strip [ ]
     if SFA_CondHasTarget(inner) then
-      rebuilt[#rebuilt + 1] = cond
+      rebuilt[#rebuilt + 1] = "[" .. inner .. "]"
     elseif inner:match("^%s*$") then
       rebuilt[#rebuilt + 1] = "[@" .. unit .. "]"
     else
@@ -978,21 +996,33 @@ end
 -- Resolves a click macro for a given unit:
 --   1. Replaces any explicit @unit token with @<unit> (legacy behavior).
 --   2. Auto-injects @<unit> into cast/use clauses that have no target.
-local function SFA_ResolveMacroForUnit(macroText, unit)
+--
+-- forceDisposition (optional, "help"/"harm", 0.25.29): forces every
+-- /cast and /use clause (never /target or /focus, which are harmless
+-- regardless of who they select) to additionally require that
+-- disposition, UNLESS the user's own macro already specifies one. This
+-- is what keeps the combined Target/Focus macro (see
+-- SFA_BuildReactiveDesired) from casting a friendly-group spell on a
+-- hostile target or vice versa when the user's own stored macro text
+-- doesn't already include an explicit [help]/[harm] condition -- e.g. a
+-- plain "/cast Rejuvenation" with no brackets at all used to be made
+-- safe purely by which stored table got selected for the CURRENT live
+-- target; now that both tables' lines are always present on the button
+-- at once, each line must enforce its own disposition explicitly.
+local function SFA_ResolveMacroForUnit(macroText, unit, forceDisposition)
   macroText = tostring(macroText):gsub("@unit", "@" .. unit)
 
   local outLines = {}
   for line in (macroText .. "\n"):gmatch("(.-)\n") do
     local cmd, rest = line:match("^(%s*/%w+%s*)(.*)$")
     local lower = line:lower()
-    local isCast = lower:find("^%s*/cast")
-      or lower:find("^%s*/use")
-      or lower:find("^%s*/target")
-      or lower:find("^%s*/focus")
-    if cmd and isCast then
+    local isCastSpell = lower:find("^%s*/cast") or lower:find("^%s*/use")
+    local isTargetLike = lower:find("^%s*/target") or lower:find("^%s*/focus")
+    if cmd and (isCastSpell or isTargetLike) then
+      local segForce = isCastSpell and forceDisposition or nil
       local segments = {}
       for seg in (rest .. ";"):gmatch("(.-);") do
-        segments[#segments + 1] = SFA_ProcessSegment(seg, unit)
+        segments[#segments + 1] = SFA_ProcessSegment(seg, unit, segForce)
       end
       outLines[#outLines + 1] = cmd .. table.concat(segments, ";")
     else
@@ -1286,9 +1316,39 @@ local SFA_NATIVE_CLICK_ATTR_KEYS = {
 -- these writes are cheap and only run on discrete events (not every
 -- frame), always writing unconditionally is the safe fix -- no more
 -- caching, no more risk of a stale "already applied" belief going stale.
+-- 0.25.28, ROOT CAUSE FOUND (taint.log, 2026-09-02): SFA_ClickDriver is a
+-- secure/protected frame (SecureHandlerBaseTemplate +
+-- SecureHandlerAttributeTemplate). WoW silently BLOCKS any SetAttribute()
+-- call on it made from ordinary insecure addon code while
+-- InCombatLockdown() is true -- regardless of whether the value would
+-- even change -- and this does NOT throw a catchable Lua error, so every
+-- pcall in this addon still reported ok=true while the write was actually
+-- being dropped. A flushed taint.log (full logout, /console taintLog 1)
+-- showed 13,067 identical blocked-action entries in one session, all
+-- stacked through here:
+--   An action was blocked in combat because of taint from
+--   Simple_Frame_Assistant - SFA_ClickCastDriver:SetAttribute()
+--       Core.lua:1294 SFA_ApplyNativeClickDriver()
+--       Core.lua:2476 SFA_ApplyNativeReactiveClickBindings()
+--       Core.lua:2508 ApplyNativeTargetFocusClickBindings()
+--       Core.lua:2089 OnEvent()
+-- The trigger was Target/Focus click-cast rewriting these attributes on
+-- EVERY PLAYER_TARGET_CHANGED/PLAYER_FOCUS_CHANGED (i.e. every single
+-- Tab-target mid-fight) -- see SFA_BuildReactiveDesired/
+-- SFA_ApplyNativeReactiveClickBindings below for the redesign that makes
+-- that reapply unnecessary. This guard is kept as defense-in-depth for
+-- every OTHER caller (arena/friendly frames on roster/zone/arena events,
+-- which can still land mid-combat): skip the write in combat and remember
+-- to catch up once combat ends (see PLAYER_REGEN_ENABLED in SFA:OnEvent).
 local function SFA_ApplyNativeClickDriver(frame, desired)
   local refKey = frame and frame.sfaNativeClickRefKey
   if not refKey then return end
+
+  if InCombatLockdown and InCombatLockdown() then
+    SFA:Log("native-click driver-apply skipped-in-combat frame=%s", refKey)
+    SFA.sfaNativeClickApplyPending = true
+    return
+  end
 
   for _, key in ipairs(SFA_NATIVE_CLICK_ATTR_KEYS) do
     SFA_ClickDriver:SetAttribute("sfa-native-" .. key, desired[key])
@@ -1562,6 +1622,25 @@ local function SFA_OnManagedFrameClick(self, frame, refKey, button)
 
   if not (IsAltKeyDown and IsControlKeyDown and IsAltKeyDown() and IsControlKeyDown()) then return end
 
+  -- 0.25.27: user reported (2026-09-02) the AddOn list's "Interface actions
+  -- failed because of this AddOn" counter climbing (44 and counting), tied
+  -- to combat, with no catchable Lua error in the debug log (debug was off
+  -- at the time, but this class of block characteristically doesn't raise
+  -- a pcall-catchable error at all -- the engine silently denies the call
+  -- and increments that counter/prints its own red chat line, bypassing
+  -- our pcall wrapping entirely). UnitPopup_OpenMenu and
+  -- MenuUtil.CreateContextMenu both reach into Blizzard's protected menu
+  -- system; calling either from our own insecure HookScript while
+  -- InCombatLockdown() is true is exactly the shape of call this counter
+  -- tracks. Root cause not confirmed via log (none was captured), but this
+  -- guard is correct regardless -- neither call should ever be attempted
+  -- in combat. Skip cleanly and log why, instead of attempting a call that
+  -- would just get silently denied.
+  if InCombatLockdown and InCombatLockdown() then
+    self:Log("native-click ctrlalt-menu skipped-in-combat frame=%s unit=%s", refKey, SFA_DescribeValue(unit))
+    return
+  end
+
   self:Log("native-click ctrlalt-menu trigger frame=%s unit=%s", refKey, SFA_DescribeValue(unit))
 
   -- 0.25.14: try the legacy-named-but-live UnitPopup_OpenMenu first -- if
@@ -1761,9 +1840,16 @@ local function SFA_ApplyNativeClickToFrame(self, frame, refKey, clicks)
     -- it's a superset of any narrower registration, this can only add
     -- coverage (e.g. Middle-click) -- confirmed safe and non-tainting via
     -- the arena investigation.
+    -- 0.25.27: log combat state alongside this call too -- see the
+    -- "Interface actions failed" investigation note on SFA_OnManagedFrameClick
+    -- above. If this counter keeps climbing even with the menu guard added
+    -- there, a "incombat=true" line here next to a debug session would
+    -- point at RegisterForClicks/SFA_RegisterClickFrame on a protected
+    -- native frame as the real source instead.
+    local wasInCombat = InCombatLockdown and InCombatLockdown()
     local okReg, regErr = pcall(frame.RegisterForClicks, frame, "AnyUp", "AnyDown")
-    self:Log("native-click RegisterForClicks frame=%s ok=%s err=%s",
-      refKey, tostring(okReg), okReg and "" or SFA_DescribeValue(regErr))
+    self:Log("native-click RegisterForClicks frame=%s ok=%s err=%s incombat=%s",
+      refKey, tostring(okReg), okReg and "" or SFA_DescribeValue(regErr), tostring(wasInCombat))
 
     frame.sfaNativeClickRegistered = true
   else
@@ -2052,15 +2138,18 @@ function SFA:CreateMinimapButton()
 end
 
 function SFA:OnEvent(event, ...)
-  -- 0.25.0 redesign step 2: keep Target/Focus click-cast in sync with
-  -- whatever the player is currently targeting/focusing. Deliberately
-  -- unconditional (not gated on combat, and not folded into the big
-  -- if/elseif chain below) for the same reason the arena/friendly appliers
-  -- above aren't gated -- the actual reserved-attribute writes happen
-  -- inside the secure snippet, which Blizzard allows during combat, and
-  -- target changes happen constantly mid-fight.
+  -- 0.25.28: this used to call self:ApplyNativeTargetFocusClickBindings()
+  -- (a full driver rewrite) here on every single target/focus change,
+  -- believing the actual SetAttribute writes happened safely inside the
+  -- secure snippet regardless of combat. taint.log proved that belief
+  -- wrong -- the CALL INTO the driver (SFA_ClickDriver:SetAttribute()) is
+  -- itself blocked by Blizzard while InCombatLockdown() is true, since
+  -- the driver frame is secure/protected. With the combined-macro
+  -- redesign (see SFA_BuildReactiveDesired), the driver's attributes no
+  -- longer need to change when the target/focus changes at all, so this
+  -- now only keeps the passive Ctrl+Alt-menu click hook alive.
   if event == "PLAYER_TARGET_CHANGED" or event == "PLAYER_FOCUS_CHANGED" then
-    self:ApplyNativeTargetFocusClickBindings()
+    self:TouchNativeTargetFocusClickHooks()
   end
 
   if event == "PLAYER_LOGIN" then
@@ -2072,6 +2161,7 @@ function SFA:OnEvent(event, ...)
     self:RefreshQuestIndicators()
     self:MacroFrame_Init()
     self:ApplyAllNativeClickBindings()
+    if self.ApplyCursorRingSettings then self:ApplyCursorRingSettings() end
     if self.InstallMenuTagObservers then self:InstallMenuTagObservers() end
     -- Hook the WoW Settings window directly so values refresh whenever the user opens it,
     -- regardless of which subcategory navigation mechanism WoW uses internally.
@@ -2104,6 +2194,13 @@ function SFA:OnEvent(event, ...)
     self:ResetProcReadyStates()
     self:UpdateMinimapButtonPosition()
     self:RefreshEnemyNameplateOverlays()
+    -- 0.25.28: catch up on any click-cast driver apply that
+    -- SFA_ApplyNativeClickDriver deferred because it was attempted while
+    -- InCombatLockdown() was true (see that function's notes).
+    if self.sfaNativeClickApplyPending then
+      self.sfaNativeClickApplyPending = false
+      self:ApplyAllNativeClickBindings()
+    end
     return
   end
 
@@ -2374,35 +2471,81 @@ function SFA:DumpArenaFrameAttributes()
 end
 
 -- 0.25.0 redesign, step 2: reactive click-cast on TargetFrame/FocusFrame.
--- Unlike arena/party/raid (where a frame's role -- friendly or enemy -- is
--- fixed), Target/Focus show whatever the player last targeted/focused, so
--- the SAME frame must swap between the "friendly" and "enemy" per-spec
--- macro table depending on the current unit's reaction, and clear entirely
--- when the unit doesn't exist. Uses the same non-tainting driver as
--- everything else above -- only the macro-table choice differs.
+--
+-- 0.25.28 REDESIGN (see the long comment on SFA_ApplyNativeClickDriver
+-- above for the taint.log evidence): this used to pick ONE of the
+-- friendly/enemy per-spec macro tables based on the CURRENT unit's live
+-- UnitIsFriend reaction, and rewrote the driver's attributes every single
+-- time the target/focus changed to swap tables -- which is exactly what
+-- was hammering SFA_ClickDriver:SetAttribute() thousands of times a
+-- combat session and getting silently blocked by Blizzard's in-combat
+-- protected-frame lockdown.
+--
+-- The rewrite was never actually necessary for correctness: TargetFrame's
+-- `.unit` is always the fixed token "target" (FocusFrame: "focus"),
+-- regardless of who's currently targeted, and WoW's own macro engine
+-- re-evaluates `[@target,help,...]`/`[@target,harm,...]` bracket
+-- conditions fresh at CAST time, not at attribute-write time. So instead
+-- of choosing a table live, SFA_BuildReactiveDesired below resolves BOTH
+-- groups' macros once (against the fixed unit token) and stacks them as
+-- separate lines per button -- each line keeps its own help/harm
+-- condition from the user's stored macro, so whichever line matches the
+-- CURRENT target just fires on its own, live, with no addon-side
+-- attribute rewrite ever needed again on target/focus change. See
+-- SFA:TouchNativeTargetFocusClickHooks below for what now runs instead on
+-- PLAYER_TARGET_CHANGED/PLAYER_FOCUS_CHANGED (hook-only, never touches
+-- the driver).
+-- 0.25.29: which disposition each group's /cast|/use lines get FORCED to
+-- require (see SFA_ResolveMacroForUnit's forceDisposition doc above) --
+-- friendly lines must only fire on a help-able (friendly) unit, enemy
+-- lines only on a harm-able (hostile) one. Without this, a stored macro
+-- with no explicit [help]/[harm] of its own (e.g. a plain
+-- "/cast Rejuvenation") would fire on WHATEVER is currently targeted,
+-- friend or foe, once both groups' lines are combined onto the same
+-- button -- confirmed live by the user: friendly spells were firing on
+-- enemy targets. Forcing the group's own disposition here restores the
+-- guarantee the old live-UnitIsFriend group-selection used to provide,
+-- without needing to rewrite attributes on every target change again.
+local SFA_REACTIVE_GROUP_DISPOSITION = { friendly = "help", enemy = "harm" }
+
+local function SFA_BuildReactiveDesired(self, unit)
+  local buttonKeys = {
+    LeftButton = { "type1", "macrotext1", "set1" },
+    RightButton = { "type2", "macrotext2", "set2" },
+    MiddleButton = { "type3", "macrotext3", "set3" },
+  }
+
+  local desired = {}
+  for button, keys in pairs(buttonKeys) do
+    local parts = {}
+    for _, group in ipairs({ "friendly", "enemy" }) do
+      if self:GetCharEnabled(group) then
+        local clicks = self:GetSpecClickTable(group)
+        local macroText = clicks and clicks[button]
+        if macroText and macroText ~= "" then
+          parts[#parts + 1] = SFA_ResolveMacroForUnit(macroText, unit, SFA_REACTIVE_GROUP_DISPOSITION[group])
+        end
+      end
+    end
+    if #parts > 0 then
+      desired[keys[1]] = "macro"
+      desired[keys[2]] = table.concat(parts, "\n")
+      desired[keys[3]] = true
+    else
+      desired[keys[1]] = nil
+      desired[keys[2]] = nil
+      desired[keys[3]] = false
+    end
+  end
+  return desired
+end
+
 local function SFA_ApplyNativeReactiveClickBindings(self, frameName)
   local frame = _G[frameName]
   if not frame then return end
 
-  -- 0.25.10: resolve the current unit/group BEFORE deciding whether to
-  -- register at all -- see SFA_ApplyNativeClickBindingsForFrames above for
-  -- why: a frame we've never touched yet this session, whose CURRENT
-  -- group is disabled, is skipped completely (no RegisterForClicks, no
-  -- HookScript, no SetAttribute) so Blizzard's own default right-click
-  -- menu is never disturbed in the first place. A frame already touched
-  -- earlier this session (e.g. it showed an enabled-group unit before)
-  -- keeps being driven as before -- clearing to nil is the best we can do
-  -- for it without a reload.
   local unit = frame.unit
   if type(unit) ~= "string" then unit = nil end
-
-  local okExists, exists = pcall(UnitExists, unit)
-  local clickGroup = nil
-  if unit and okExists and exists then
-    local okFriend, isFriend = pcall(UnitIsFriend, "player", unit)
-    clickGroup = (okFriend and isFriend) and "friendly" or "enemy"
-  end
-  local enabled = clickGroup and self:GetCharEnabled(clickGroup)
 
   -- 0.25.11: read-only hook, unconditional regardless of enabled/disabled
   -- -- see SFA_EnsureClickHook. Must happen even when we're about to skip
@@ -2411,31 +2554,13 @@ local function SFA_ApplyNativeReactiveClickBindings(self, frameName)
   SFA_EnsureClickHook(self, frame, frameName)
 
   if not frame.sfaNativeClickRegistered then
-    -- 0.25.19: TargetFrame/FocusFrame have no fixed click group -- unlike
-    -- arena/friendly frames, which group applies depends on WHO is
-    -- currently targeted, so at PLAYER_LOGIN (before any target exists)
-    -- `enabled` above is nil even when the user wants click-cast on. That
-    -- left a real gap: the very first touch (the one that permanently
-    -- decides, for this session, whether Blizzard's own native menu stays
-    -- installed on this frame -- see the one-time-decision finding above)
-    -- was deferred until a target/focus actually existed, instead of
-    -- happening deterministically at login. In practice a same-session
-    -- carryover (e.g. an earlier disable-checkbox test before a later
-    -- re-enable, with no reload in between) could leave the frame's
-    -- decision already locked to native from earlier in the session, with
-    -- no way for a later "enabled" apply to reclaim it -- confirmed live
-    -- (2026-09-01): the user saw click-and-cast fail to fire on TargetFrame
-    -- until their next reload, matching this exact gap. Fix: if EITHER
-    -- group is currently enabled, touch (register) the frame immediately
-    -- even with no unit/clickGroup yet -- an empty attribute set is
-    -- harmless (SFA_ApplyNativeClickDriver below still runs with `desired`
-    -- unset when clickGroup is nil) but it claims the one-time decision for
-    -- the addon right at login, before the user can possibly interact with
-    -- the frame at all. Only truly skip touching (preserving native
-    -- end-to-end) when BOTH groups are disabled, since we can't yet know
-    -- which group this frame will actually need.
+    -- 0.25.19: touch (register) the frame right at login if EITHER group
+    -- is enabled, even before any target/focus exists -- see the
+    -- one-time-decision finding in the project notes. Only truly skip
+    -- touching (preserving native end-to-end) when BOTH groups are
+    -- disabled.
     local anyGroupEnabled = self:GetCharEnabled("friendly") or self:GetCharEnabled("enemy")
-    if not (enabled or anyGroupEnabled) then return end
+    if not anyGroupEnabled then return end
 
     SFA_RegisterClickFrame(frame)
     local okReg, regErr = pcall(frame.RegisterForClicks, frame, "AnyUp", "AnyDown")
@@ -2445,41 +2570,37 @@ local function SFA_ApplyNativeReactiveClickBindings(self, frameName)
     frame.sfaNativeClickRegistered = true
   end
 
-  if not clickGroup then
+  if not unit then
     SFA_ApplyNativeClickDriver(frame, {})
     return
   end
 
-  local clicks = self:GetSpecClickTable(clickGroup)
-  if type(clicks) ~= "table" then clicks = {} end
-  if not enabled then clicks = {} end
-
-  local buttonKeys = {
-    LeftButton = { "type1", "macrotext1", "set1" },
-    RightButton = { "type2", "macrotext2", "set2" },
-    MiddleButton = { "type3", "macrotext3", "set3" },
-  }
-
-  local desired = {}
-  for button, keys in pairs(buttonKeys) do
-    local macroText = clicks[button]
-    if macroText and macroText ~= "" then
-      desired[keys[1]] = "macro"
-      desired[keys[2]] = SFA_ResolveMacroForUnit(macroText, unit)
-      desired[keys[3]] = true
-    else
-      desired[keys[1]] = nil
-      desired[keys[2]] = nil
-      desired[keys[3]] = false
-    end
-  end
-
+  local desired = SFA_BuildReactiveDesired(self, unit)
   SFA_ApplyNativeClickDriver(frame, desired)
+end
+
+-- 0.25.28: lightweight target/focus-change handler. Installing the
+-- passive Ctrl+Alt-menu click hook (and, on the rare frame that somehow
+-- wasn't registered yet, registering it) is safe to repeat in combat --
+-- SecureHandlerSetFrameRef and HookScript are non-tainting -- but with
+-- the combined-macro redesign above there is no longer any need to touch
+-- SFA_ClickDriver on every target/focus change at all. This is what
+-- SFA:OnEvent now calls for PLAYER_TARGET_CHANGED/PLAYER_FOCUS_CHANGED
+-- instead of the full apply.
+local function SFA_TouchReactiveClickFrame(self, frameName)
+  local frame = _G[frameName]
+  if not frame then return end
+  SFA_EnsureClickHook(self, frame, frameName)
 end
 
 function SFA:ApplyNativeTargetFocusClickBindings()
   SFA_ApplyNativeReactiveClickBindings(self, "TargetFrame")
   SFA_ApplyNativeReactiveClickBindings(self, "FocusFrame")
+end
+
+function SFA:TouchNativeTargetFocusClickHooks()
+  SFA_TouchReactiveClickFrame(self, "TargetFrame")
+  SFA_TouchReactiveClickFrame(self, "FocusFrame")
 end
 
 -- ---------------------------------------------------------------------
@@ -2806,6 +2927,113 @@ local function SFA_GetBestGCD(allowSaved)
     end
 
     return SFA_BASE_GCD, nil, pending and "refreshing" or "base"
+end
+
+-- ---------------------------------------------------------------------
+-- Cursor Ring (0.25.25, user-requested): a small colored ring that
+-- follows the mouse cursor, with color/size/thickness configurable from
+-- the Smart Assist options tab. Purely cosmetic UI overlay -- unlike
+-- almost everything else in this addon, this has NOTHING to do with
+-- Secret Values, protected clicks, or combat restrictions: cursor
+-- position (GetCursorPosition) is ordinary, always-available API.
+--
+-- Technique (same idea used by the CursorRing addon, reimplemented here
+-- with our own bundled assets rather than borrowing theirs): one filled
+-- white circle texture, tinted to the user's chosen color via
+-- SetVertexColor, plus a second texture -- an "inverse mask" (opaque
+-- everywhere except a centered circular hole, media/textures/
+-- ring_mask_inverse.png) -- applied via CreateMaskTexture/AddMaskTexture.
+-- The mask's own on-screen SIZE controls how big the punched hole is;
+-- scaling it independently of the outer ring size is what makes
+-- thickness adjustable. The hole in ring_mask_inverse.png is baked at
+-- 90% of that texture's own width (see the generation script in this
+-- project's working notes) -- SFA_CURSOR_RING_MASK_HOLE_FRACTION below
+-- must match that baked value for the thickness math to come out right.
+-- ---------------------------------------------------------------------
+local SFA_CURSOR_RING_MASK_HOLE_FRACTION = 0.9
+local SFA_CursorRingFrame
+
+local function SFA_EnsureCursorRingFrame()
+  if SFA_CursorRingFrame then return SFA_CursorRingFrame end
+
+  local frame = CreateFrame("Frame", "SFA_CursorRingFrame", UIParent)
+  frame:SetFrameStrata("TOOLTIP")
+  frame:SetSize(28, 28)
+  frame:Hide()
+
+  local ring = frame:CreateTexture(nil, "OVERLAY")
+  ring:SetTexture("Interface\\AddOns\\Simple_Frame_Assistant\\media\\textures\\ring_solid.png")
+  ring:SetAllPoints(frame)
+  frame.ring = ring
+
+  -- CreateMaskTexture/AddMaskTexture is standard, widely-supported modern
+  -- WoW UI API -- still guarded with pcall/feature-checks per this
+  -- codebase's usual defensive style, since a masked ring is a "nice to
+  -- have"; if masking isn't available for any reason, we fall back to
+  -- just showing the plain filled disc rather than erroring.
+  if frame.CreateMaskTexture and ring.AddMaskTexture then
+    local okMask, mask = pcall(frame.CreateMaskTexture, frame, nil, "OVERLAY")
+    if okMask and mask then
+      mask:SetTexture("Interface\\AddOns\\Simple_Frame_Assistant\\media\\textures\\ring_mask_inverse.png")
+      local okAttach = pcall(ring.AddMaskTexture, ring, mask)
+      if okAttach then
+        frame.mask = mask
+      end
+    end
+  end
+
+  -- Hidden frames don't run OnUpdate in WoW, so this costs nothing while
+  -- the feature is disabled -- no need to add/remove the script itself.
+  frame:SetScript("OnUpdate", function(self)
+    local px, py = GetCursorPosition()
+    local scale = UIParent:GetEffectiveScale() or UIParent:GetScale() or 1
+    if not scale or scale == 0 then scale = 1 end
+    self:ClearAllPoints()
+    self:SetPoint("CENTER", UIParent, "BOTTOMLEFT", px / scale, py / scale)
+  end)
+
+  SFA_CursorRingFrame = frame
+  return frame
+end
+
+function SFA:ApplyCursorRingSettings()
+  local cfg = self.db and self.db.other and self.db.other.cursorRing
+  local frame = SFA_EnsureCursorRingFrame()
+
+  if not (cfg and cfg.enabled) then
+    frame:Hide()
+    return
+  end
+
+  local size = tonumber(cfg.size) or 28
+  if size < 8 then size = 8 end
+  if size > 128 then size = 128 end
+
+  local maxThickness = math.floor(size / 2) - 1
+  if maxThickness < 1 then maxThickness = 1 end
+  local thickness = tonumber(cfg.thickness) or 3
+  if thickness < 1 then thickness = 1 end
+  if thickness > maxThickness then thickness = maxThickness end
+
+  local color = cfg.color or {}
+  local r = tonumber(color.r); if r == nil then r = 1 end
+  local g = tonumber(color.g); if g == nil then g = 1 end
+  local b = tonumber(color.b); if b == nil then b = 1 end
+  local a = tonumber(color.a); if a == nil then a = 1 end
+
+  frame:SetSize(size, size)
+  frame.ring:SetVertexColor(r, g, b, a)
+
+  if frame.mask then
+    local holeDiameter = size - (2 * thickness)
+    if holeDiameter < 2 then holeDiameter = 2 end
+    local maskSize = holeDiameter / SFA_CURSOR_RING_MASK_HOLE_FRACTION
+    frame.mask:ClearAllPoints()
+    frame.mask:SetPoint("CENTER", frame, "CENTER")
+    frame.mask:SetSize(maskSize, maskSize)
+  end
+
+  frame:Show()
 end
 
 function SFA_UpdateCharacterGCD()

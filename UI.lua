@@ -1008,6 +1008,13 @@ if self.options.otherBuilderSpenderIndicator then self.options.otherBuilderSpend
   if self.options.otherQuestIndicator then self.options.otherQuestIndicator:SetChecked(db.other and db.other.showQuestIndicator) end
   if self.options.otherTargetXMark then self.options.otherTargetXMark:SetChecked(db.other and db.other.showTargetXMark) end
   if self.options.otherCharacterGCD then self.options.otherCharacterGCD:SetChecked(db.other and db.other.showCharacterGCD ~= false) end
+  if self.options.cursorRingEnabled and db.other and db.other.cursorRing then
+    self.options.cursorRingEnabled:SetChecked(db.other.cursorRing.enabled)
+  end
+  if self.options.cursorRingSwatch and self.options.cursorRingSwatch.bg and db.other and db.other.cursorRing and db.other.cursorRing.color then
+    local c = db.other.cursorRing.color
+    self.options.cursorRingSwatch.bg:SetColorTexture(c.r or 1, c.g or 1, c.b or 1, 1)
+  end
   if self.options.debugEnabled then self.options.debugEnabled:SetChecked(SFA.auraDebug) end
   if self.RefreshDebugLogDisplay then self:RefreshDebugLogDisplay() end
 
@@ -1414,7 +1421,103 @@ function SFA:CreateOptionsPanel()
     procReadyRows[#procReadyRows + 1] = row
   end
 
-  otherContent:SetHeight(920)
+  ----------------------------------------------------------------------
+  -- Cursor Ring (0.25.25, user-requested): a small colored ring that
+  -- follows the mouse cursor. Purely cosmetic -- see the matching
+  -- SFA:ApplyCursorRingSettings() implementation in Core.lua for how the
+  -- ring/thickness is actually drawn (a colored disc texture plus a
+  -- scalable inverse-mask texture punching an adjustable hole).
+  ----------------------------------------------------------------------
+  self.db.other.cursorRing = self.db.other.cursorRing or {}
+  local cursorRingCfg = self.db.other.cursorRing
+  if cursorRingCfg.enabled == nil then cursorRingCfg.enabled = false end
+  cursorRingCfg.size = cursorRingCfg.size or 28
+  cursorRingCfg.thickness = cursorRingCfg.thickness or 3
+  cursorRingCfg.color = cursorRingCfg.color or {}
+  if cursorRingCfg.color.r == nil then cursorRingCfg.color.r = 0.25 end
+  if cursorRingCfg.color.g == nil then cursorRingCfg.color.g = 0.8 end
+  if cursorRingCfg.color.b == nil then cursorRingCfg.color.b = 1.0 end
+  if cursorRingCfg.color.a == nil then cursorRingCfg.color.a = 1.0 end
+
+  local cursorRingHeader = CreateSectionHeader(otherContent, "Cursor Ring", 18, -900)
+
+  local cursorRingEnabled = CreateCheckbox(otherContent, "Show a colored ring around the mouse cursor", 24, -936, cursorRingCfg.enabled, function(val)
+    cursorRingCfg.enabled = val
+    if SFA.ApplyCursorRingSettings then SFA:ApplyCursorRingSettings() end
+  end)
+
+  local cursorRingSize = CreateSlider(otherContent, "Ring size", 24, -972, 12, 80, 1, cursorRingCfg.size, function(val)
+    cursorRingCfg.size = val
+    if SFA.ApplyCursorRingSettings then SFA:ApplyCursorRingSettings() end
+  end)
+
+  local cursorRingThickness = CreateSlider(otherContent, "Ring thickness", 300, -972, 1, 20, 1, cursorRingCfg.thickness, function(val)
+    cursorRingCfg.thickness = val
+    if SFA.ApplyCursorRingSettings then SFA:ApplyCursorRingSettings() end
+  end)
+
+  local cursorRingColorLabel = CreateLabel(otherContent, "Ring color", 24, -1044, "GameFontHighlight")
+
+  local cursorRingSwatch = CreateFrame("Button", nil, otherContent)
+  cursorRingSwatch:SetSize(28, 28)
+  cursorRingSwatch:SetPoint("TOPLEFT", 120, -1040)
+
+  local swatchBorder = cursorRingSwatch:CreateTexture(nil, "BACKGROUND")
+  swatchBorder:SetPoint("TOPLEFT", -2, 2)
+  swatchBorder:SetPoint("BOTTOMRIGHT", 2, -2)
+  swatchBorder:SetColorTexture(1, 1, 1, 0.6)
+
+  local swatchBg = cursorRingSwatch:CreateTexture(nil, "ARTWORK")
+  swatchBg:SetAllPoints()
+  swatchBg:SetColorTexture(cursorRingCfg.color.r, cursorRingCfg.color.g, cursorRingCfg.color.b, 1)
+  cursorRingSwatch.bg = swatchBg
+
+  local function ApplyCursorRingColor(r, g, b, a)
+    cursorRingCfg.color.r, cursorRingCfg.color.g, cursorRingCfg.color.b = r, g, b
+    if a ~= nil then cursorRingCfg.color.a = a end
+    swatchBg:SetColorTexture(r, g, b, 1)
+    if SFA.ApplyCursorRingSettings then SFA:ApplyCursorRingSettings() end
+  end
+
+  -- Modern (retail, post-Dragonflight) ColorPickerFrame API --
+  -- SetupColorPickerAndShow with swatchFunc/opacityFunc/cancelFunc,
+  -- retrieved via ColorPickerFrame:GetColorRGB()/GetColorAlpha() and
+  -- restored on cancel via ColorPickerFrame:GetPreviousValues().
+  cursorRingSwatch:SetScript("OnClick", function()
+    if not (ColorPickerFrame and ColorPickerFrame.SetupColorPickerAndShow) then return end
+    local startR, startG, startB, startA =
+      cursorRingCfg.color.r, cursorRingCfg.color.g, cursorRingCfg.color.b, cursorRingCfg.color.a
+
+    local function OnColorChanged()
+      local r, g, b = ColorPickerFrame:GetColorRGB()
+      local a = ColorPickerFrame:GetColorAlpha()
+      ApplyCursorRingColor(r, g, b, a)
+    end
+    local function OnCancel()
+      local r, g, b, a = ColorPickerFrame:GetPreviousValues()
+      if r then
+        ApplyCursorRingColor(r, g, b, a)
+      else
+        ApplyCursorRingColor(startR, startG, startB, startA)
+      end
+    end
+
+    local okShow = pcall(ColorPickerFrame.SetupColorPickerAndShow, ColorPickerFrame, {
+      swatchFunc = OnColorChanged,
+      opacityFunc = OnColorChanged,
+      cancelFunc = OnCancel,
+      hasOpacity = true,
+      opacity = startA,
+      r = startR,
+      g = startG,
+      b = startB,
+    })
+    if not okShow then
+      SFA:Log("cursor-ring color-picker open-failed")
+    end
+  end)
+
+  otherContent:SetHeight(1120)
 
 -- ---------------------------------------------------------------------
 -- Debug panel: enable/disable chat debug prints, reload the UI, and view
@@ -1603,6 +1706,8 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
     procReadyRows = procReadyRows,
     procReadyEmpty = procReadyEmpty,
     otherBuilderSpenderIndicator = otherBuilderSpenderIndicator,
+    cursorRingEnabled = cursorRingEnabled,
+    cursorRingSwatch = cursorRingSwatch,
     friendlySection = friendlySection,
     enemySection = enemySection,
     friendlySpecLabel = friendlySpecLabel,

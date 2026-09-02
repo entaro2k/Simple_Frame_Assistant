@@ -30,6 +30,12 @@ SFA.defaults = {
       enabled = false,
       spells = {},
     },
+    cursorRing = {
+      enabled = false,
+      size = 28,
+      thickness = 3,
+      color = { r = 0.25, g = 0.8, b = 1.0, a = 1.0 },
+    },
   },
   friendly = {
     clicks = {
