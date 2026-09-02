@@ -4,7 +4,7 @@
 ## Notes: Simple Midnight-only friendly/enemy frame assistant.
 ## Author: En Taro
 ## Category: User Interface
-## Version: 0.25.29
+## Version: 0.25.30
 ## SavedVariables: SFA_DB, SFA_DebugLog
 ## SavedVariablesPerCharacter: SFA_DB_Char
 

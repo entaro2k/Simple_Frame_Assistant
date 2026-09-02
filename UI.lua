@@ -1283,7 +1283,7 @@ function SFA:CreateOptionsPanel()
   otherSub:SetPoint("TOPLEFT", otherTitle, "BOTTOMLEFT", 0, -6)
   otherSub:SetText("Smart Assist options.")
   local otherHeader = CreateSectionHeader(otherContent, "Smart Assist", 18, -68)
-  local otherTargetXMark = CreateCheckbox(otherContent, "Show X mark on enemy target frame", 24, -104, self.db.other and self.db.other.showTargetXMark, function(val)
+  local otherTargetXMark = CreateCheckbox(otherContent, "Show X mark on target's nameplate", 24, -104, self.db.other and self.db.other.showTargetXMark, function(val)
     self.db.other.showTargetXMark = val
     self:RefreshEnemyNameplateOverlays()
   end)
