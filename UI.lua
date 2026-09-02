@@ -1236,13 +1236,35 @@ function SFA:CreateOptionsPanel()
   -- Frame / Enemy Frame tabs) to whichever Blizzard-native frames are
   -- already on screen (player/party/raid/target/focus for friendly, arena
   -- for enemy), positioned wherever Blizzard's own Edit Mode puts them.
+  -- 0.25.24: user screenshot showed this text getting clipped hard on the
+  -- right edge (mid-word, e.g. "...Enemy Frame" / "Blizzard's own frames"
+  -- split across lines with words missing) -- SetWidth(760) does define a
+  -- wrap width, but the REAL visible area inside the Settings panel this
+  -- frame is embedded in is narrower than the 840px-wide scroll content
+  -- frame itself, so a 760-wide wrap wraps later than the visible edge and
+  -- gets clipped instead. This exact class of bug hit the checkbox/button
+  -- row too (0.25.12) and was fixed there by using a narrower, tested-safe
+  -- width (600) instead of guessing wider -- same fix applied here.
   local generalInfo = rootContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   generalInfo:SetPoint("TOPLEFT", 24, -188)
-  generalInfo:SetWidth(760)
+  generalInfo:SetWidth(600)
   generalInfo:SetJustifyH("LEFT")
-  generalInfo:SetText("Use /sfa to open this page quickly. This addon applies your Left/Right/Middle click macros (Friendly Frame / Enemy Frame tabs) directly to Blizzard's own frames -- it no longer renders its own. Macro text can use [@unit] and will be expanded automatically. Note: overriding Right-click removes Blizzard's normal right-click menu (Set Focus, Target Marker Icon, PvP, etc) on that frame -- holding Ctrl+Alt while right-clicking opens a small experimental menu (Whisper/Inspect) instead, while we work on restoring the full native one.")
+  generalInfo:SetText("Use /sfa to open this page quickly. This addon applies your Left/Right/Middle click macros (Friendly Frame / Enemy Frame tabs) directly to Blizzard's own frames -- it no longer renders its own. Macro text can use [@unit] and will be expanded automatically. Note: overriding Right-click replaces Blizzard's normal right-click menu (Set Focus, Target Marker, PvP, etc) on that frame.")
 
-  rootContent:SetHeight(260)
+  -- 0.25.21: user-requested (2026-09-01) -- the Ctrl+Alt+Right-click note
+  -- kept getting missed sitting inline inside the paragraph above, so it's
+  -- now its own line: bigger, bold, and red, anchored below generalInfo
+  -- (not a fixed pixel offset) so it always lands right under however many
+  -- lines that paragraph wraps to. 0.25.24: narrowed to 600 for the same
+  -- clipping reason as generalInfo above.
+  local ctrlAltNote = rootContent:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+  ctrlAltNote:SetPoint("TOPLEFT", generalInfo, "BOTTOMLEFT", 0, -12)
+  ctrlAltNote:SetWidth(600)
+  ctrlAltNote:SetJustifyH("LEFT")
+  ctrlAltNote:SetTextColor(1, 0.15, 0.15)
+  ctrlAltNote:SetText("To open the native Frame Settings menu, hold Ctrl+Alt and Right-click on your portrait, Target, Focus, or Party frame. This replaces plain Right-click, now used for Click & Cast.")
+
+  rootContent:SetHeight(420)
 
   local otherPanel = CreateCanvasFrame(addonName .. "OptionsOther")
   otherPanel.OnRefresh = function() C_Timer.After(0, function() if SFA and SFA.RefreshOptionsPanel then SFA:RefreshOptionsPanel() end end) end
