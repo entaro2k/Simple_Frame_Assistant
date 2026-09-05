@@ -117,43 +117,28 @@ function SFA:GetQuestTooltipScanner()
   return scanner
 end
 
-function SFA:TooltipLineStartsWithDash(text)
-  if not text then return false end
-
-  local ok, result = pcall(function()
-    text = tostring(text)
-    text = text:match("^%s*(.-)%s*$") or text
-    return text:find("^%-") ~= nil
-  end)
-
-  return ok and result or false
-end
-
-function SFA:GetTooltipDataLineText(line)
-  if not line then return nil end
-
-  if TooltipUtil and TooltipUtil.SurfaceArgs then
-    pcall(TooltipUtil.SurfaceArgs, line)
-  end
-
-  return line.leftText or line.text or line.rightText
-end
-
 function SFA:HasQuestObjectiveTooltip(unit)
   -- Prefer the tooltip data API. Reading GameTooltip FontString text on nameplates
   -- can return protected/secret strings and taint string comparisons.
   if C_TooltipInfo and C_TooltipInfo.GetUnit then
     local ok, data = pcall(C_TooltipInfo.GetUnit, unit)
     if ok and data and data.lines and #data.lines > 4 then
-      local lineText = self:GetTooltipDataLineText(data.lines[5])
-      if self:TooltipLineStartsWithDash(lineText) then
-        return true
-      end
-
-      -- In scenarios, Blizzard can expose the fifth tooltip line as a protected/secret
-      -- string. If the unit is already validated as an attackable mob and the tooltip
-      -- has the objective-style layout (>4 lines), keep the indicator active instead
-      -- of failing the string comparison. This is what catches scenario objectives.
+      -- 0.25.31, NEW TAINT SOURCE FOUND+FIXED: this used to also check
+      -- whether the tooltip's 5th line text started with "-" (via a
+      -- since-removed SFA_TooltipLineStartsWithDash helper) before
+      -- returning true -- but that check's result was never actually
+      -- used: both the "starts with dash" and "doesn't" branches
+      -- returned true regardless. All it accomplished was calling
+      -- :match() on tooltip line text that can be a Blizzard "secret
+      -- value" (protected scenario/objective tooltip data) -- which is
+      -- BLOCKED taint even from inside a pcall (confirmed live via
+      -- taint.log: "An attempt to index a secret value was blocked
+      -- because of taint from Simple_Frame_Assistant ... Core.lua:125
+      -- TooltipLineStartsWithDash()", 1800+ occurrences in one session).
+      -- The pcall caught the resulting Lua error so nothing ever broke
+      -- functionally, but it was pure taint noise on every quest-mob
+      -- tooltip scan. Removed entirely; a >4-line tooltip is still
+      -- treated as having an objective-style layout, exactly as before.
       return true
     end
   end
@@ -1833,6 +1818,31 @@ local function SFA_ApplyNativeClickToFrame(self, frame, refKey, clicks)
   if not frame then return end
 
   if not frame.sfaNativeClickRegistered then
+    -- 0.25.32, NEW TAINT SOURCE FOUND+FIXED: SecureHandlerSetFrameRef()
+    -- (called by SFA_RegisterClickFrame just below) itself does a
+    -- SetAttribute() on Blizzard's own internal SecureHandlersUpdateFrame
+    -- -- a secure/protected frame -- and THAT write is blocked by
+    -- InCombatLockdown() exactly like the SFA_ClickDriver writes fixed in
+    -- 0.25.28. Confirmed via taint.log (2026-09-05): "An action was
+    -- blocked in combat because of taint from Simple_Frame_Assistant -
+    -- SecureHandlersUpdateFrame:SetAttribute()", stacked through
+    -- SecureHandlerSetFrameRef() -> SFA_RegisterClickFrame() ->
+    -- SFA_ApplyNativeClickToFrame() -> ApplyNativeArenaClickBindings(),
+    -- triggered by a roster/arena event (GROUP_ROSTER_UPDATE/
+    -- ARENA_OPPONENT_UPDATE/etc, see SFA:OnEvent) firing mid-combat. This
+    -- contradicts the old assumption below (and in the "else" branch)
+    -- that SecureHandlerSetFrameRef is unconditionally "safe and
+    -- non-tainting" from insecure code -- it does NOT accrue taint, but
+    -- it CAN still be an outright blocked write during combat lockdown,
+    -- same as any other SetAttribute on a protected frame. Skip and defer
+    -- to the same PLAYER_REGEN_ENABLED catch-up SFA_ApplyNativeClickDriver
+    -- already uses (SFA.sfaNativeClickApplyPending).
+    if InCombatLockdown and InCombatLockdown() then
+      self:Log("native-click register skipped-in-combat frame=%s", refKey)
+      self.sfaNativeClickApplyPending = true
+      return
+    end
+
     SFA_RegisterClickFrame(frame, refKey)
 
     -- "AnyUp, AnyDown" is the broadest RegisterForClicks option and
@@ -1855,10 +1865,16 @@ local function SFA_ApplyNativeClickToFrame(self, frame, refKey, clicks)
   else
     -- Some frames (anonymous pool members) can be reused for a different
     -- unit between passes, or a fresh frame object can be found under the
-    -- same refKey later. Re-pointing the ref every pass is cheap and safe
-    -- (SecureHandlerSetFrameRef is designed to be called repeatedly from
-    -- insecure code) and keeps the driver's lookup correct either way.
-    SFA_RegisterClickFrame(frame, refKey)
+    -- same refKey later, so this re-points the ref every pass to keep the
+    -- driver's lookup correct. 0.25.32: but per the note above, that
+    -- SecureHandlerSetFrameRef() call is blocked (not just tainting) in
+    -- combat -- skip it in combat and leave the ref pointing at whatever
+    -- it already had (a no-op unless a pooled frame was actually recycled
+    -- for a different unit mid-fight, which will self-correct once combat
+    -- ends and this re-applies via the PLAYER_REGEN_ENABLED catch-up).
+    if not (InCombatLockdown and InCombatLockdown()) then
+      SFA_RegisterClickFrame(frame, refKey)
+    end
   end
 
   local unit = frame.unit
