@@ -36,6 +36,16 @@ SFA.defaults = {
       thickness = 3,
       color = { r = 0.25, g = 0.8, b = 1.0, a = 1.0 },
     },
+    -- 0.25.35/0.25.38: "modifier bypass" -- see Core.lua,
+    -- SFA_ApplyRightClickBypassOverrides / SFA_ApplyLeftClickBypassOverrides.
+    -- RightButton default preserves the exact pre-0.25.33 behavior
+    -- (Ctrl+Alt+Right-click opens the native menu). LeftButton is a brand
+    -- new capability (select target instead of casting) so it defaults to
+    -- off -- nothing checked, nothing changes until the user opts in.
+    modifierBypass = {
+      RightButton = { ctrl = true, alt = true, shift = false },
+      LeftButton = { ctrl = false, alt = false, shift = false },
+    },
   },
   friendly = {
     clicks = {

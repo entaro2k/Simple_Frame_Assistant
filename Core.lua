@@ -1142,6 +1142,44 @@ SFA_ClickDriver:SetAttribute("_onattributechanged", [==[
         btn:SetAttribute("*type3", nil)
         btn:SetAttribute("*macrotext3", nil)
       end
+
+      -- 0.25.35: Right-click modifier bypass (SCOPED retry of 0.25.33,
+      -- which broke click-and-cast entirely and was reverted in 0.25.34 --
+      -- see project notes; root cause not fully confirmed, so this retry is
+      -- deliberately the smallest possible increment: RightButton only,
+      -- and every line spelled out explicitly rather than a generic loop,
+      -- matching the exact style of the type1/2/3 blocks above that are
+      -- already proven to work reliably in this snippet). nil correctly
+      -- clears a combo that isn't currently bypassed.
+      btn:SetAttribute("alt-type2", self:GetAttribute("sfa-native-alt-type2"))
+      btn:SetAttribute("ctrl-type2", self:GetAttribute("sfa-native-ctrl-type2"))
+      btn:SetAttribute("shift-type2", self:GetAttribute("sfa-native-shift-type2"))
+      btn:SetAttribute("alt-ctrl-type2", self:GetAttribute("sfa-native-alt-ctrl-type2"))
+      btn:SetAttribute("alt-shift-type2", self:GetAttribute("sfa-native-alt-shift-type2"))
+      btn:SetAttribute("ctrl-shift-type2", self:GetAttribute("sfa-native-ctrl-shift-type2"))
+      btn:SetAttribute("alt-ctrl-shift-type2", self:GetAttribute("sfa-native-alt-ctrl-shift-type2"))
+
+      -- 0.25.38: Left-click modifier bypass, same explicit-lines pattern as
+      -- Right-click above (confirmed stable live before this was added).
+      -- 0.25.40: also forwards a "-macrotext1" companion for each combo --
+      -- see SFA_ApplyLeftClickBypassOverrides for why (type="target" turned
+      -- out to be a forbidden direct action; type="macro" + "/target [@unit]"
+      -- is the same mechanism already proven safe by every plain click-cast
+      -- macro this addon has ever written).
+      btn:SetAttribute("alt-type1", self:GetAttribute("sfa-native-alt-type1"))
+      btn:SetAttribute("alt-macrotext1", self:GetAttribute("sfa-native-alt-macrotext1"))
+      btn:SetAttribute("ctrl-type1", self:GetAttribute("sfa-native-ctrl-type1"))
+      btn:SetAttribute("ctrl-macrotext1", self:GetAttribute("sfa-native-ctrl-macrotext1"))
+      btn:SetAttribute("shift-type1", self:GetAttribute("sfa-native-shift-type1"))
+      btn:SetAttribute("shift-macrotext1", self:GetAttribute("sfa-native-shift-macrotext1"))
+      btn:SetAttribute("alt-ctrl-type1", self:GetAttribute("sfa-native-alt-ctrl-type1"))
+      btn:SetAttribute("alt-ctrl-macrotext1", self:GetAttribute("sfa-native-alt-ctrl-macrotext1"))
+      btn:SetAttribute("alt-shift-type1", self:GetAttribute("sfa-native-alt-shift-type1"))
+      btn:SetAttribute("alt-shift-macrotext1", self:GetAttribute("sfa-native-alt-shift-macrotext1"))
+      btn:SetAttribute("ctrl-shift-type1", self:GetAttribute("sfa-native-ctrl-shift-type1"))
+      btn:SetAttribute("ctrl-shift-macrotext1", self:GetAttribute("sfa-native-ctrl-shift-macrotext1"))
+      btn:SetAttribute("alt-ctrl-shift-type1", self:GetAttribute("sfa-native-alt-ctrl-shift-type1"))
+      btn:SetAttribute("alt-ctrl-shift-macrotext1", self:GetAttribute("sfa-native-alt-ctrl-shift-macrotext1"))
     end
   end
 ]==])
@@ -1281,11 +1319,162 @@ local function SFA_DescribeFrameChildren(f)
   return table.concat(parts, " ")
 end
 
+-- 0.25.35: Right-click-only modifier bypass, deliberately scoped down after
+-- 0.25.33 (all 3 buttons x all 7 combos, plus a generic loop inside the
+-- secure snippet) broke click-and-cast entirely and had to be reverted in
+-- 0.25.34 -- see project notes. This retry touches only RightButton
+-- (type2), and the secure snippet forwarding (above, in _onattributechanged)
+-- is spelled out explicitly rather than looped, matching the already-proven
+-- style of the type1/2/3 blocks. 0.25.38 extends the same, still-explicit
+-- pattern to LeftButton (type1), confirmed stable on Right-click first.
+--
+-- Combo names in Blizzard's own canonical order (confirmed via Blizzard's
+-- SecureTemplates.lua / SecureButton_GetModifierPrefix): alt, then ctrl,
+-- then shift -- e.g. holding Ctrl+Alt resolves to "alt-ctrl-type2", never
+-- "ctrl-alt-type2". Spelled out in full rather than generated, so the order
+-- stays visibly correct at a glance.
+local SFA_BYPASS_MODIFIER_COMBOS = {
+  "alt", "ctrl", "shift",
+  "alt-ctrl", "alt-shift", "ctrl-shift",
+  "alt-ctrl-shift",
+}
+
 local SFA_NATIVE_CLICK_ATTR_KEYS = {
   "type1", "macrotext1", "set1",
   "type2", "macrotext2", "set2",
   "type3", "macrotext3", "set3",
 }
+for _, combo in ipairs(SFA_BYPASS_MODIFIER_COMBOS) do
+  SFA_NATIVE_CLICK_ATTR_KEYS[#SFA_NATIVE_CLICK_ATTR_KEYS + 1] = combo .. "-type1"
+  -- 0.25.40: companion macrotext for the Left-click bypass -- see
+  -- SFA_ApplyLeftClickBypassOverrides.
+  SFA_NATIVE_CLICK_ATTR_KEYS[#SFA_NATIVE_CLICK_ATTR_KEYS + 1] = combo .. "-macrotext1"
+  SFA_NATIVE_CLICK_ATTR_KEYS[#SFA_NATIVE_CLICK_ATTR_KEYS + 1] = combo .. "-type2"
+end
+
+-- Reads the user's Right-click bypass checkboxes (Ctrl/Alt/Shift).
+local function SFA_GetRightClickBypassConfig(self)
+  local cfg = self.db and self.db.other and self.db.other.modifierBypass and self.db.other.modifierBypass.RightButton
+  if type(cfg) ~= "table" then return nil end
+  return cfg
+end
+
+-- 0.25.38: same idea, for Left-click.
+local function SFA_GetLeftClickBypassConfig(self)
+  local cfg = self.db and self.db.other and self.db.other.modifierBypass and self.db.other.modifierBypass.LeftButton
+  if type(cfg) ~= "table" then return nil end
+  return cfg
+end
+
+-- combo is e.g. "alt-ctrl" -- true only if EVERY modifier the user checked
+-- (rowChecked.alt/.ctrl/.shift) appears in combo. AND semantics (0.25.37,
+-- changed from the original OR design after live testing: checking Ctrl
+-- and Alt should require BOTH held together, like the original hardcoded
+-- Ctrl+Alt behavior -- holding just one was opening the native menu when
+-- it shouldn't have). An unchecked modifier is NOT constrained -- combo may
+-- or may not also include it (checked is a SUBSET of combo, not an exact
+-- match), so e.g. Ctrl+Alt checked still matches Ctrl+Alt+Shift held.
+local function SFA_ComboMatchesChecked(combo, rowChecked)
+  if not rowChecked then return false end
+  local anyChecked = false
+  if rowChecked.alt then
+    anyChecked = true
+    if not combo:find("alt", 1, true) then return false end
+  end
+  if rowChecked.ctrl then
+    anyChecked = true
+    if not combo:find("ctrl", 1, true) then return false end
+  end
+  if rowChecked.shift then
+    anyChecked = true
+    if not combo:find("shift", 1, true) then return false end
+  end
+  return anyChecked
+end
+
+-- Merges the Right-click bypass overrides into an existing `desired`
+-- attribute table. Always writes every combo key explicitly (nil to clear
+-- when not bypassed this pass) -- never skip a key, per the 0.25.6 lesson.
+-- The override value is ATTRIBUTE_NOOP ("") -- this only SUPPRESSES the
+-- macro; SFA_OnManagedFrameClick (existing, live-proven OnClick hook)
+-- separately calls the real native menu opener under the identical
+-- modifier condition, checked against the same user configuration.
+local function SFA_ApplyRightClickBypassOverrides(self, desired)
+  local rowChecked = SFA_GetRightClickBypassConfig(self)
+  for _, combo in ipairs(SFA_BYPASS_MODIFIER_COMBOS) do
+    local key = combo .. "-type2"
+    if SFA_ComboMatchesChecked(combo, rowChecked) then
+      desired[key] = ""
+    else
+      desired[key] = nil
+    end
+  end
+end
+
+-- History of this override's value, for the next person reading this:
+-- 0.25.38 set it to type="target" directly, on the theory that this
+-- reproduces Blizzard's own default Left-click action (confirmed via
+-- source: SECURE_ACTIONS.target calls TargetUnit(unit)). BUG (0.25.39):
+-- live-tested and it silently did nothing.
+-- 0.25.39 then set it to ATTRIBUTE_NOOP ("") -- suppress only -- and called
+-- TargetUnit(unit) DIRECTLY from the SFA_OnManagedFrameClick OnClick hook
+-- instead, on the theory that a genuine hardware-event context bypasses
+-- whatever was silently dropping type="target". BUG (0.25.40): live-tested
+-- and Blizzard popped an in-game dialog -- "Simple_Frame_Assistant has been
+-- blocked from an action only available to the Blizzard UI" -- meaning a
+-- raw TargetUnit() Lua call is now a genuinely FORBIDDEN action for addon
+-- code in Midnight, not merely combat-gated; calling it directly is not a
+-- viable path at all, hardware-event context or not.
+-- 0.25.40, ACTUAL FIX: use type="macro" + macrotext="/target [@unit]"
+-- instead of type="target" or a direct Lua call -- this is the EXACT same
+-- secure-attribute mechanism this addon has used successfully for years
+-- for every other click-cast macro (including the default LeftButton
+-- macro, "/target [@unit]", in Config.lua's own defaults), so it can't be
+-- forbidden and doesn't go through whatever gates a raw "target" type.
+-- SFA_OnManagedFrameClick no longer needs a LeftButton branch at all --
+-- this is fully expressed as a secure attribute, just like a normal spell
+-- macro.
+--
+-- 0.25.41 BUG FIX: this originally wrote the literal string
+-- "/target [@unit]" straight into the attribute. "@unit" here is NOT a
+-- real WoW unit token -- it's this addon's OWN internal placeholder,
+-- normally expanded to the frame's real unit id (e.g. "@party1", "@target",
+-- "@player") by SFA_ResolveMacroForUnit before a macro is ever written to
+-- an attribute (see its gsub("@unit", "@" .. unit) at the top of that
+-- function). Writing the placeholder directly, unresolved, meant the
+-- macro's target condition was literally "[@unit]" -- WoW looked for a
+-- unit actually named "unit", found none, and the /target line silently
+-- matched nothing. Fixed by requiring the caller's real `unit` and running
+-- the same placeholder text through SFA_ResolveMacroForUnit, exactly like
+-- every other macro this addon ever writes.
+local function SFA_ApplyLeftClickBypassOverrides(self, desired, unit)
+  local rowChecked = SFA_GetLeftClickBypassConfig(self)
+  local resolvedTargetMacro = unit and SFA_ResolveMacroForUnit("/target [@unit]", unit) or nil
+  for _, combo in ipairs(SFA_BYPASS_MODIFIER_COMBOS) do
+    local typeKey = combo .. "-type1"
+    local macroKey = combo .. "-macrotext1"
+    if resolvedTargetMacro and SFA_ComboMatchesChecked(combo, rowChecked) then
+      desired[typeKey] = "macro"
+      desired[macroKey] = resolvedTargetMacro
+    else
+      desired[typeKey] = nil
+      desired[macroKey] = nil
+    end
+  end
+end
+
+-- Shared AND-semantics live modifier check (0.25.37 introduced this logic
+-- inline for Right-click; 0.25.39 extracts it so Left-click can reuse it
+-- exactly): true only if EVERY modifier checked in rowChecked is CURRENTLY
+-- held -- an unchecked one is unconstrained. False if nothing is checked.
+local function SFA_RowModifiersHeld(rowChecked)
+  if not rowChecked then return false end
+  if not (rowChecked.alt or rowChecked.ctrl or rowChecked.shift) then return false end
+  if rowChecked.alt and not (IsAltKeyDown and IsAltKeyDown()) then return false end
+  if rowChecked.ctrl and not (IsControlKeyDown and IsControlKeyDown()) then return false end
+  if rowChecked.shift and not (IsShiftKeyDown and IsShiftKeyDown()) then return false end
+  return true
+end
 
 -- 0.25.6 bugfix: this used to skip the actual attribute write whenever
 -- `desired` matched the last-applied signature we cached on the frame
@@ -1569,6 +1758,15 @@ local function SFA_TryOpenUnitMenuLegacy(self, unit, refKey)
 end
 
 local function SFA_OnManagedFrameClick(self, frame, refKey, button)
+  -- 0.25.39 briefly added a LeftButton branch here that called TargetUnit()
+  -- directly from this hook. 0.25.40 REMOVED it: that direct call turned
+  -- out to be a forbidden action for addon code (Blizzard popped a "blocked
+  -- from an action only available to the Blizzard UI" dialog), not merely
+  -- combat-gated. Left-click's bypass is now a plain type="macro" secure
+  -- attribute (see SFA_ApplyLeftClickBypassOverrides) -- the same
+  -- mechanism every other click-cast macro in this addon already uses --
+  -- so it needs no OnClick hook at all. Only Right-click still needs this
+  -- hook, for the native-menu trigger below.
   if button ~= "RightButton" then return end
 
   local unit = frame.unit
@@ -1605,7 +1803,22 @@ local function SFA_OnManagedFrameClick(self, frame, refKey, button)
     end)
   end
 
-  if not (IsAltKeyDown and IsControlKeyDown and IsAltKeyDown() and IsControlKeyDown()) then return end
+  -- 0.25.35: was hardcoded to Ctrl+Alt. 0.25.37: reads the user's
+  -- configured Right-click checkboxes with AND semantics -- EVERY checked
+  -- modifier must currently be held (an unchecked one is unconstrained),
+  -- so this fires under exactly the same condition
+  -- SFA_ApplyRightClickBypassOverrides suppresses the plain macro for.
+  -- (0.25.35 originally shipped this as OR -- any one checked modifier
+  -- alone was enough -- but live testing showed that opened the native
+  -- menu on, e.g., Ctrl alone even with both Ctrl and Alt checked, which
+  -- isn't what was wanted.)
+  -- 0.25.39: extracted into the shared SFA_RowModifiersHeld helper instead
+  -- of duplicating this same AND-semantics check inline (originally shared
+  -- with a Left-click OnClick branch that 0.25.40 removed again -- see
+  -- SFA_ApplyLeftClickBypassOverrides -- but the extraction itself is still
+  -- worth keeping for clarity).
+  local rightRowChecked = SFA_GetRightClickBypassConfig(self)
+  if not SFA_RowModifiersHeld(rightRowChecked) then return end
 
   -- 0.25.27: user reported (2026-09-02) the AddOn list's "Interface actions
   -- failed because of this AddOn" counter climbing (44 and counting), tied
@@ -1899,6 +2112,12 @@ local function SFA_ApplyNativeClickToFrame(self, frame, refKey, clicks)
       desired[keys[3]] = false
     end
   end
+
+  -- 0.25.35/0.25.38: modifier bypass applies uniformly to every managed
+  -- frame, arena/friendly included -- see SFA_ApplyRightClickBypassOverrides
+  -- / SFA_ApplyLeftClickBypassOverrides.
+  SFA_ApplyRightClickBypassOverrides(self, desired)
+  SFA_ApplyLeftClickBypassOverrides(self, desired, unit)
 
   SFA_ApplyNativeClickDriver(frame, desired)
 end
@@ -2553,6 +2772,12 @@ local function SFA_BuildReactiveDesired(self, unit)
       desired[keys[3]] = false
     end
   end
+
+  -- 0.25.35/0.25.38: same modifier bypass as the arena/friendly path -- see
+  -- SFA_ApplyRightClickBypassOverrides / SFA_ApplyLeftClickBypassOverrides.
+  SFA_ApplyRightClickBypassOverrides(self, desired)
+  SFA_ApplyLeftClickBypassOverrides(self, desired, unit)
+
   return desired
 end
 

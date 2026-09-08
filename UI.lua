@@ -1015,6 +1015,18 @@ if self.options.otherBuilderSpenderIndicator then self.options.otherBuilderSpend
     local c = db.other.cursorRing.color
     self.options.cursorRingSwatch.bg:SetColorTexture(c.r or 1, c.g or 1, c.b or 1, 1)
   end
+  if self.options.rightClickBypass then
+    local cfg = db.other and db.other.modifierBypass and db.other.modifierBypass.RightButton
+    for mod, box in pairs(self.options.rightClickBypass) do
+      box:SetChecked(cfg and cfg[mod])
+    end
+  end
+  if self.options.leftClickBypass then
+    local cfg = db.other and db.other.modifierBypass and db.other.modifierBypass.LeftButton
+    for mod, box in pairs(self.options.leftClickBypass) do
+      box:SetChecked(cfg and cfg[mod])
+    end
+  end
   if self.options.debugEnabled then self.options.debugEnabled:SetChecked(SFA.auraDebug) end
   if self.RefreshDebugLogDisplay then self:RefreshDebugLogDisplay() end
 
@@ -1269,9 +1281,68 @@ function SFA:CreateOptionsPanel()
   ctrlAltNote:SetWidth(600)
   ctrlAltNote:SetJustifyH("LEFT")
   ctrlAltNote:SetTextColor(1, 0.15, 0.15)
-  ctrlAltNote:SetText("To open the native Frame Settings menu, hold Ctrl+Alt and Right-click on your portrait, Target, Focus, or Party frame. This replaces plain Right-click, now used for Click & Cast.")
+  ctrlAltNote:SetText("By default, holding Ctrl+Alt and Right-clicking your portrait, Target, Focus, or a Party frame opens the native Frame Settings menu instead of Click & Cast. Customize which key(s) do this below.")
 
-  rootContent:SetHeight(420)
+  -- 0.25.35: Right-click-only modifier bypass (scoped-down retry of 0.25.33,
+  -- which broke click-and-cast entirely and was reverted in 0.25.34 -- see
+  -- project notes). Checking a box means holding that modifier while
+  -- Right-clicking opens the native menu instead of Click & Cast. 0.25.37:
+  -- checking more than one is AND -- ALL checked keys must be held together
+  -- (holding just one of several checked keys does NOT open the native
+  -- menu) -- changed from the original OR design after live testing showed
+  -- OR opened the menu too eagerly (e.g. Ctrl alone, even with both Ctrl
+  -- and Alt checked). If this proves stable, the same idea extends to
+  -- Left/Middle-click next.
+  local bypassHeader = CreateSectionHeader(rootContent, "Right-click modifier bypass", 18, -300)
+
+  local bypassHint = rootContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  bypassHint:SetPoint("TOPLEFT", 24, -328)
+  bypassHint:SetWidth(600)
+  bypassHint:SetJustifyH("LEFT")
+  bypassHint:SetText("Check the key(s) that must ALL be held together while Right-clicking to open the native menu instead of Click & Cast.")
+
+  local bypassMods = { "ctrl", "alt", "shift" }
+  local bypassModLabel = { ctrl = "Ctrl", alt = "Alt", shift = "Shift" }
+  local bypassModX = { ctrl = 24, alt = 140, shift = 250 }
+  local rightClickBypassBoxes = {}
+  for _, mod in ipairs(bypassMods) do
+    local cfg = self.db.other and self.db.other.modifierBypass and self.db.other.modifierBypass.RightButton
+    local box = CreateCheckbox(rootContent, bypassModLabel[mod], bypassModX[mod], -364, cfg and cfg[mod], function(val)
+      self.db.other = self.db.other or {}
+      self.db.other.modifierBypass = self.db.other.modifierBypass or {}
+      self.db.other.modifierBypass.RightButton = self.db.other.modifierBypass.RightButton or {}
+      self.db.other.modifierBypass.RightButton[mod] = val
+      if self.ApplyAllNativeClickBindings then self:ApplyAllNativeClickBindings() end
+    end)
+    rightClickBypassBoxes[mod] = box
+  end
+
+  -- 0.25.38: same idea for Left-click, confirmed stable on Right-click
+  -- first. Bypassing here means selecting the target instead of casting
+  -- the configured macro. Off by default (nothing checked) -- a brand new
+  -- capability, not replacing any prior behavior.
+  local leftBypassHeader = CreateSectionHeader(rootContent, "Left-click modifier bypass", 18, -400)
+
+  local leftBypassHint = rootContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  leftBypassHint:SetPoint("TOPLEFT", 24, -428)
+  leftBypassHint:SetWidth(600)
+  leftBypassHint:SetJustifyH("LEFT")
+  leftBypassHint:SetText("Check the key(s) that must ALL be held together while Left-clicking to select the target instead of Click & Cast.")
+
+  local leftClickBypassBoxes = {}
+  for _, mod in ipairs(bypassMods) do
+    local cfg = self.db.other and self.db.other.modifierBypass and self.db.other.modifierBypass.LeftButton
+    local box = CreateCheckbox(rootContent, bypassModLabel[mod], bypassModX[mod], -464, cfg and cfg[mod], function(val)
+      self.db.other = self.db.other or {}
+      self.db.other.modifierBypass = self.db.other.modifierBypass or {}
+      self.db.other.modifierBypass.LeftButton = self.db.other.modifierBypass.LeftButton or {}
+      self.db.other.modifierBypass.LeftButton[mod] = val
+      if self.ApplyAllNativeClickBindings then self:ApplyAllNativeClickBindings() end
+    end)
+    leftClickBypassBoxes[mod] = box
+  end
+
+  rootContent:SetHeight(520)
 
   local otherPanel = CreateCanvasFrame(addonName .. "OptionsOther")
   otherPanel.OnRefresh = function() C_Timer.After(0, function() if SFA and SFA.RefreshOptionsPanel then SFA:RefreshOptionsPanel() end end) end
@@ -1708,6 +1779,8 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
     otherBuilderSpenderIndicator = otherBuilderSpenderIndicator,
     cursorRingEnabled = cursorRingEnabled,
     cursorRingSwatch = cursorRingSwatch,
+    rightClickBypass = rightClickBypassBoxes,
+    leftClickBypass = leftClickBypassBoxes,
     friendlySection = friendlySection,
     enemySection = enemySection,
     friendlySpecLabel = friendlySpecLabel,
@@ -1724,6 +1797,28 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
 end
 
 function SFA:OpenOptions()
+  -- 0.25.36, NEW TAINT SOURCE FOUND+FIXED: Settings.OpenToCategory calls
+  -- Blizzard's own OpenSettingsPanel() internally, which -- like
+  -- SetAttribute() on a secure frame -- is a protected call that gets
+  -- silently BLOCKED when invoked from insecure addon code while
+  -- InCombatLockdown() is true. Confirmed via taint.log (2026-09-06):
+  -- "An action was blocked in combat because of taint from
+  -- Simple_Frame_Assistant - OpenSettingsPanel()", four times in a row
+  -- (repeated /sfa / minimap-button presses while in combat during quick
+  -- testing). This matches standard Blizzard behavior too -- the normal
+  -- ESC/Options menu can't be opened in combat either -- so the correct
+  -- fix isn't to work around the restriction, just to stop attempting the
+  -- call at all while in combat, and tell the user why instead of silently
+  -- doing nothing (which is what happened before: the pcall below caught
+  -- the resulting error, so nothing visibly happened and nothing was ever
+  -- logged by this addon -- taint.log was the only way this was found).
+  if InCombatLockdown and InCombatLockdown() then
+    if UIErrorsFrame then
+      UIErrorsFrame:AddMessage("Simple Frame Assistant: can't open options while in combat.", 1.0, 0.4, 0.4)
+    end
+    return
+  end
+
   self:RefreshOptionsPanel()
   if Settings and Settings.OpenToCategory and self.settingsCategory then
     local ok = pcall(function()
