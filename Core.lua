@@ -24,6 +24,30 @@ local function GetAddonVersion()
   return "Unknown"
 end
 
+-- 0.25.46: start of "WoW Forever" (Classic+ beta, client folder
+-- _classic_beta_) compatibility work. Per user direction (2026-09-21):
+-- the Midnight/Retail code path stays the default everywhere; any place
+-- that genuinely needs to behave differently on Forever should branch
+-- explicitly (if SFA_IsForeverClient() then ... else ... end) right where
+-- the difference actually is, rather than forking the whole addon into
+-- separate files -- so the two code paths stay side by side and easy to
+-- compare/diff.
+--
+-- WOW_PROJECT_ID is NOT a reliable discriminator here: Forever's beta
+-- build (confirmed via .build.info: wow_classic_beta, version 1.60.1)
+-- has been observed by other addon devs reporting WOW_PROJECT_ID ==
+-- WOW_PROJECT_MAINLINE, same as retail -- so instead this keys off the
+-- client's own TOC interface number (select(4, GetBuildInfo())), which
+-- is genuinely client-specific: Forever is currently 16001, while
+-- Midnight retail is 120100+. The threshold is set well below Midnight's
+-- range so any future Classic-lineage flavor (which have historically
+-- always used much smaller interface numbers) is also caught by it.
+local SFA_FOREVER_INTERFACE_THRESHOLD = 100000
+function SFA_IsForeverClient()
+  local ok, tocVersion = pcall(function() return select(4, GetBuildInfo()) end)
+  return ok and tocVersion ~= nil and tocVersion < SFA_FOREVER_INTERFACE_THRESHOLD
+end
+
 SFA.auraDebug = false -- toggled by /sfaauradebug or the Debug options tab; synced with self.db.auraDebugEnabled at login so it survives /reload
 
 -- Sets aura-debug chat printing on/off and persists the choice to
@@ -1055,8 +1079,39 @@ local SFA_ClickApplySeq = 0
 -- "PartyFrame") are created anonymously (GetName() == nil) and would
 -- otherwise be unreachable here. Falls back to frame:GetName() when no
 -- refKey is given, for callers that only ever deal in named frames.
+-- 0.25.47: on WoW Forever's current beta build, the engine global
+-- `loadstring_untainted` is missing -- confirmed via an in-game Lua
+-- error whose stack runs SecureHandlerSetFrameRef() ->
+-- Blizzard_RestrictedAddOnEnvironment/SecureHandlers.lua ->
+-- RestrictedExecution.lua:79, which calls loadstring_untainted to
+-- (re)compile the `_onattributechanged` snippet attached to
+-- SFA_ClickDriver, and gets "attempt to call a nil value" because that
+-- global is nil on this build. This is a genuine gap in Blizzard's own
+-- restricted-execution environment on this beta, not something specific
+-- to our snippet's content -- there is no alternative API to compile a
+-- secure snippet, so no addon-side workaround exists; this has to wait
+-- for Blizzard to fix their client. Leaving frame.sfaNativeClickRefKey
+-- unset here (by returning before it would be set) is enough to make
+-- every downstream caller of SFA_ApplyNativeClickDriver no-op too (it
+-- bails immediately when that field is nil) -- so guarding this single,
+-- shared registration function is sufficient to prevent the crash from
+-- every call site (arena/friendly/target-focus, and any Debug-tab
+-- diagnostic button) without touching any of them individually.
+local function SFA_WarnForeverClickCastUnavailable()
+  if SFA._foreverClickCastWarned then return end
+  SFA._foreverClickCastWarned = true
+  SFA:LogForce("click-cast disabled on this client: loadstring_untainted is missing (Blizzard engine gap, not an SFA bug)")
+  if DEFAULT_CHAT_FRAME then
+    DEFAULT_CHAT_FRAME:AddMessage("|cffff5555Simple Frame Assistant:|r click-cast is currently unavailable on WoW Forever (beta) -- Blizzard's client is missing an engine feature secure click macros need. This will start working on its own once Blizzard fixes it, no addon update needed.")
+  end
+end
+
 local function SFA_RegisterClickFrame(frame, refKey)
   if not frame then return end
+  if SFA_IsForeverClient and SFA_IsForeverClient() then
+    SFA_WarnForeverClickCastUnavailable()
+    return
+  end
   refKey = refKey or frame:GetName()
   if not refKey then return end
   frame.sfaNativeClickRefKey = refKey
@@ -2245,6 +2300,21 @@ function SFA:OnEvent(event, ...)
   end
 
   if event == "PLAYER_LOGIN" then
+    -- 0.25.46: one-line, always-captured record of which client we're
+    -- running on (LogForce, not Log, so it's there even if the user
+    -- forgot to enable debug) -- the fastest way to confirm what
+    -- SFA_IsForeverClient() actually saw on a given login, without
+    -- needing a separate diagnostic round-trip.
+    do
+      local okBI, verStr, buildNum, buildDate, tocVersion = pcall(GetBuildInfo)
+      self:LogForce("login: version=%s buildNum=%s date=%s toc=%s isForever=%s",
+        okBI and tostring(verStr) or "?",
+        okBI and tostring(buildNum) or "?",
+        okBI and tostring(buildDate) or "?",
+        okBI and tostring(tocVersion) or "?",
+        tostring(SFA_IsForeverClient and SFA_IsForeverClient() or false))
+    end
+
     self:InitializeDB()
     self.auraDebug = (self.db and self.db.auraDebugEnabled) and true or false
     self:CreateOptionsPanel()
@@ -2419,7 +2489,14 @@ function SFA:ScanArenaFrames()
   local f = EnumerateFrames()
   while f do
     local ok, name = pcall(f.GetName, f)
-    name = (ok and name) or nil
+    -- 0.25.48: some third-party addons' frames have a `.GetName` field
+    -- that doesn't behave like the standard UIObject method -- confirmed
+    -- live (a damage-meter addon's pooled Button returned a FontString
+    -- object here, not a string), which crashed the next line's
+    -- `name:lower()` with "attempt to call a nil value" (FontString has
+    -- no .lower method). type() guard instead of a truthiness check, so
+    -- a rogue non-string "name" is treated the same as no name at all.
+    name = (ok and type(name) == "string" and name) or nil
 
     if name and name:lower():find("arena") then
       nameMatches = nameMatches + 1
@@ -2706,7 +2783,9 @@ function SFA:ScanFriendlyFrames()
   local f = EnumerateFrames()
   while f do
     local ok, name = pcall(f.GetName, f)
-    name = (ok and name) or nil
+    -- 0.25.48: same non-string-GetName guard as ScanArenaFrames above --
+    -- see that comment for the confirmed live crash this fixes.
+    name = (ok and type(name) == "string" and name) or nil
 
     if name and (name:lower():find("party") or name:lower():find("compactraid") or name:lower():find("follower")) then
       nameMatches = nameMatches + 1
@@ -2737,7 +2816,10 @@ function SFA:ScanFriendlyFrames()
             local okP, parent = pcall(p.GetParent, p)
             if not okP or not parent then break end
             local okPName, pName = pcall(parent.GetName, parent)
-            chain[#chain + 1] = (okPName and pName) or "<unnamed>"
+            -- 0.25.48: same non-string-GetName guard as ScanArenaFrames/
+            -- ScanFriendlyFrames above -- table.concat below would throw
+            -- on a non-string/number entry just as surely as :lower() did.
+            chain[#chain + 1] = (okPName and type(pName) == "string" and pName) or "<unnamed>"
             p = parent
           end
           self:Log("friendlyscan attr-match parent-chain frame=%s chain=%s",

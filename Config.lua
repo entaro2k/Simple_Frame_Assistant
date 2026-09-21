@@ -45,12 +45,16 @@ SFA.defaults = {
     -- 0.25.35/0.25.38: "modifier bypass" -- see Core.lua,
     -- SFA_ApplyRightClickBypassOverrides / SFA_ApplyLeftClickBypassOverrides.
     -- RightButton default preserves the exact pre-0.25.33 behavior
-    -- (Ctrl+Alt+Right-click opens the native menu). LeftButton is a brand
-    -- new capability (select target instead of casting) so it defaults to
-    -- off -- nothing checked, nothing changes until the user opts in.
+    -- (Ctrl+Alt+Right-click opens the native menu). LeftButton originally
+    -- defaulted to "nothing checked" (0.25.38); 0.25.49 changed the default
+    -- to Ctrl+Alt checked (same as RightButton) -- see the one-time
+    -- migration in InitializeDB below, which upgrades any SavedVariables
+    -- still holding the old all-off default without touching a value the
+    -- user deliberately chose. Same default on Forever and Midnight -- no
+    -- client branching needed here, this is plain shared config.
     modifierBypass = {
       RightButton = { ctrl = true, alt = true, shift = false },
-      LeftButton = { ctrl = false, alt = false, shift = false },
+      LeftButton = { ctrl = true, alt = true, shift = false },
     },
   },
   friendly = {
@@ -97,6 +101,24 @@ function SFA:InitializeDB()
     MergeDefaults(SFA_DB, self.defaults)
   end
   self.db = SFA_DB
+
+  -- 0.25.49: LeftButton modifier-bypass default changed from "all off" to
+  -- Ctrl+Alt checked. MergeDefaults only fills in nil fields, so it never
+  -- touches this table for existing SavedVariables (it's already a table,
+  -- not nil). Do a one-time upgrade: if the saved LeftButton bypass still
+  -- exactly matches the OLD default, and the user never touched it, bump
+  -- it to the new default. Gated by a flag so it only ever runs once, and
+  -- never overwrites a value the user deliberately chose (including
+  -- deliberately choosing all-off again after this migration runs).
+  -- Same behavior on Forever and Midnight -- no client check needed.
+  if not SFA_DB.migratedLeftClickBypassDefault_0_25_49 then
+    local lb = SFA_DB.other and SFA_DB.other.modifierBypass and SFA_DB.other.modifierBypass.LeftButton
+    if lb and lb.ctrl == false and lb.alt == false and lb.shift == false then
+      lb.ctrl = true
+      lb.alt = true
+    end
+    SFA_DB.migratedLeftClickBypassDefault_0_25_49 = true
+  end
 
   -- Per-character click macros stored separately
   if type(SFA_DB_Char) ~= "table" then SFA_DB_Char = {} end

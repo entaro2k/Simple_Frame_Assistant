@@ -29,4 +29,6 @@ Most click-cast addons come with their own unit frames, which means re-doing you
 
 ## Compatibility
 
-World of Warcraft: Midnight (Interface 120100, 120105).
+World of Warcraft: Midnight (Interface 120100, 120105), and WoW Forever / Classic+ (beta, Interface 16001).
+
+Forever support comes with a temporary, beta-only limitation: click-cast relies on a secure-macro engine feature (`loadstring_untainted`) that is currently missing from the Forever beta build. On Forever, SFA detects this automatically, disables click-cast cleanly (a one-time chat message explains why instead of an error), and everything else — options panel, per-spec macro storage, Proc-ready voice alerts, Cursor Ring, quest/target markers, GCD readout — works normally. This is a gap in Blizzard's beta client, not an SFA bug, and click-cast will start working on its own, with no addon update needed, once Blizzard fixes it.
