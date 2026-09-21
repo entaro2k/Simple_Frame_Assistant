@@ -8,17 +8,18 @@ Most click-cast addons come with their own unit frames, which means re-doing you
 
 ## Features
 
-- **Click-cast on native frames** — Player, Target, Focus, Party/Raid (any layout, any group size), and Arena enemy frames. Left / Right / Middle, separate macros for friendly and enemy.
+- **Click-cast on native frames** — Player, Target, Focus, Party/Raid (any layout, any group size), and Arena enemy frames. Left / Right / Middle, separate macros for friendly and enemy, per specialization.
 - **Per-spec macros** — set once per specialization, switches automatically with your spec.
-- **Turn it off per group, any time** — a "disable click-cast" toggle for Friendly or Enemy instantly hands the right-click back to Blizzard's own menu, no need to disable the whole addon.
-- **Blizzard's real menu, on demand** — hold Ctrl+Alt and right-click to pop Blizzard's actual context menu for that unit, even while click-cast is running the plain right-click.
+- **Modifier bypass, per button** — choose which of Ctrl/Alt/Shift (held together) makes Left-click select the unit instead of casting, or Right-click open Blizzard's real context menu instead of casting — no need to disable click-cast to reach either.
+- **Turn it off per group, any time** — a "disable click-cast" toggle for Friendly or Enemy instantly hands the clicks back to Blizzard's own defaults, no need to disable the whole addon.
+- **Redesigned macro window** (optional) — organizes Blizzard's macro UI into Global / Class / Character tabs.
 
 ## Smart Assist
 
-- Builder/spender resource-full alert — screen glow plus an optional voice callout (male/female), adjustable volume and cooldown.
-- Proc-ready voice alerts for the spells you pick.
+- **Proc-ready voice alerts** — announces a chosen spell out loud, once, the moment it comes off cooldown and is usable, using the game's built-in Text-to-Speech. Pick the exact TTS voice installed on your system, with Prev/Next/Test controls, plus adjustable volume and cooldown.
+- **Cursor Ring** — a colored ring around your mouse cursor, adjustable color, size, and thickness.
 - Quest-objective `!` marker on nameplates.
-- Enemy target `X` marker.
+- Enemy target `X` marker on the current target's nameplate.
 - Estimated GCD readout under the Character window.
 - Optional minimap button.
 
@@ -28,4 +29,4 @@ Most click-cast addons come with their own unit frames, which means re-doing you
 
 ## Compatibility
 
-World of Warcraft: Midnight (Interface 120100+).
+World of Warcraft: Midnight (Interface 120100, 120105).
