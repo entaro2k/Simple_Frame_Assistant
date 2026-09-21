@@ -18,13 +18,19 @@ SFA.defaults = {
     showQuestIndicator = false,
     showTargetXMark = false,
     showCharacterGCD = true,
-    showBuilderSpenderIndicator = true,
     redesignMacroWindow = false,
+    -- Shared volume/cooldown for Proc Ready Alerts' voice announcements
+    -- (see UI.lua's "Proc Ready Alerts" section, and Core.lua's
+    -- PlayProcReadyVoice/UpdateProcReadyAlerts). This table used to also
+    -- back a "builder-spender resource full" voice alert + nameplate orb
+    -- feature, removed for simplicity -- Proc Ready is now its only user.
+    -- voiceID (0.25.43): the user's chosen TTS voice (from
+    -- SFA:GetTTSVoiceList()), left unset here so a fresh install just
+    -- falls back to whatever voice the client reports first -- see
+    -- SFA:GetTTSVoiceObject().
     resourceVoiceAlerts = {
-      enabled = false,
       cooldown = 1.0,
       volume = 5,
-      voiceStyle = "male",
     },
     procReadyAlerts = {
       enabled = false,
@@ -108,10 +114,6 @@ function SFA:InitializeDB()
   if SFA_DB_Char.friendlyEnabled == nil then SFA_DB_Char.friendlyEnabled = true end
   if SFA_DB_Char.enemyEnabled    == nil then SFA_DB_Char.enemyEnabled    = true end
 
-  -- Per-character: voice alert when builder-spender resource is full
-  SFA_DB_Char.resourceVoiceAlerts = SFA_DB_Char.resourceVoiceAlerts or {}
-  if SFA_DB_Char.resourceVoiceAlerts.enabled == nil then SFA_DB_Char.resourceVoiceAlerts.enabled = false end
-
   -- Per-character: proc ready voice alerts + monitored spells
   SFA_DB_Char.procReadyAlerts = SFA_DB_Char.procReadyAlerts or {}
   if SFA_DB_Char.procReadyAlerts.enabled == nil then SFA_DB_Char.procReadyAlerts.enabled = false end
@@ -162,18 +164,6 @@ function SFA:SetCharEnabled(group, val)
   if not self.charDB then return end
   local key = (group == "friendly") and "friendlyEnabled" or "enemyEnabled"
   self.charDB[key] = val and true or false
-end
-
--- Per-character: resource voice alert enabled
-function SFA:GetCharResourceVoiceEnabled()
-  return self.charDB and self.charDB.resourceVoiceAlerts and
-         self.charDB.resourceVoiceAlerts.enabled == true
-end
-
-function SFA:SetCharResourceVoiceEnabled(val)
-  if not self.charDB then return end
-  self.charDB.resourceVoiceAlerts = self.charDB.resourceVoiceAlerts or {}
-  self.charDB.resourceVoiceAlerts.enabled = val and true or false
 end
 
 -- Per-character: proc ready config (enabled + spells list)

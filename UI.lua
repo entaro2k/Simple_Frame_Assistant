@@ -943,56 +943,9 @@ local function CreateCanvasFrame(name)
   return frame
 end
 
--- These three dropdowns used to be built on the legacy UIDropDownMenuTemplate
--- / UIDropDownMenu_Initialize API. That API is a well-known, long-standing
--- taint source: UIDropDownMenu_Initialize() runs the init callback
--- immediately (not just when opened) and both it and UIDropDownMenu_AddButton
--- read/write shared Blizzard globals (UIDROPDOWNMENU_MENU_LEVEL, etc.) that
--- are also touched by Blizzard's own dropdown menus everywhere else in the
--- game UI. taint.log confirmed this was tainting execution the moment the
--- options panel was built (i.e. right at login, before combat), which is
--- exactly the kind of taint that accumulates into "*** ForceTaint_Strong ***"
--- and then blocks secret aura reads later. Rebuilt on Blizzard's modern,
--- non-global-state "DropdownButton" / WowStyle1DropdownTemplate menu API,
--- which doesn't touch that shared global state.
-local function SFA_CreateSimpleDropdown(parent, x, y, width, options, currentValue, onSet)
-  local drop = CreateFrame("DropdownButton", nil, parent, "WowStyle1DropdownTemplate")
-  drop:SetPoint("TOPLEFT", x - 14, y - 18)
-  drop:SetWidth(width)
-
-  drop:SetupMenu(function(owner, rootDescription)
-    for _, option in ipairs(options) do
-      rootDescription:CreateButton(option.text, function()
-        onSet(option.value)
-        drop:OverrideText(option.text)
-      end)
-    end
-  end)
-
-  local initialLabel = currentValue
-  for _, option in ipairs(options) do
-    if option.value == currentValue then
-      initialLabel = option.text
-      break
-    end
-  end
-  drop:OverrideText(initialLabel)
-  return drop
-end
-
-local function CreateResourceVoiceStyleDropDown(parent, x, y, currentMode, onSet)
-  local title = CreateLabel(parent, "Voice style", x, y, "GameFontHighlight")
-  local drop = SFA_CreateSimpleDropdown(parent, x, y, 190, {
-    { value = "male", text = "Male" },
-    { value = "female", text = "Female" },
-  }, currentMode or "male", onSet)
-  return drop, title
-end
-
 function SFA:RefreshOptionsPanel()
   if not self.options then return end
   local db = self.db
-if self.options.otherBuilderSpenderIndicator then self.options.otherBuilderSpenderIndicator:SetChecked(db.other and db.other.showBuilderSpenderIndicator ~= false) end
   if self.options.generalTitle then
     self.options.generalTitle:SetText("Simple Frame Assistant")
   end
@@ -1026,6 +979,9 @@ if self.options.otherBuilderSpenderIndicator then self.options.otherBuilderSpend
     for mod, box in pairs(self.options.leftClickBypass) do
       box:SetChecked(cfg and cfg[mod])
     end
+  end
+  if self.options.procReadyVoiceLabel then
+    self.options.procReadyVoiceLabel:SetText("Proc ready voice: " .. self:GetProcReadyVoiceLabel())
   end
   if self.options.debugEnabled then self.options.debugEnabled:SetChecked(SFA.auraDebug) end
   if self.RefreshDebugLogDisplay then self:RefreshDebugLogDisplay() end
@@ -1376,40 +1332,47 @@ function SFA:CreateOptionsPanel()
     self.db.other.showQuestIndicator = val
     self:RefreshQuestIndicators()
   end)
-  local otherBuilderSpenderIndicator = CreateCheckbox(otherContent, "Show full builder-spender resource circle", 24, -212, self.db.other.showBuilderSpenderIndicator ~= false, function(val)
-    self.db.other.showBuilderSpenderIndicator = val
-    self:RefreshEnemyNameplateOverlays()
-  end)
-
-  self.db.other.resourceVoiceAlerts = self.db.other.resourceVoiceAlerts or { enabled = false, cooldown = 1.0, volume = 5 }
+  -- Shared with Proc Ready Alerts below (see its help text) -- the old
+  -- "builder-spender resource full" voice alert + nameplate orb feature
+  -- that used to also live in this table was removed for simplicity, so
+  -- Proc Ready is now this table's only consumer.
+  self.db.other.resourceVoiceAlerts = self.db.other.resourceVoiceAlerts or { cooldown = 1.0, volume = 5 }
   if self.db.other.resourceVoiceAlerts.cooldown == nil then self.db.other.resourceVoiceAlerts.cooldown = 1.0 end
   if self.db.other.resourceVoiceAlerts.volume == nil then self.db.other.resourceVoiceAlerts.volume = 5 end
-  if self.db.other.resourceVoiceAlerts.voiceStyle ~= "female" then self.db.other.resourceVoiceAlerts.voiceStyle = "male" end
 
-  local otherResourceVoice = CreateCheckbox(otherContent, "Voice alert when builder-spender resource is full", 24, -248, self:GetCharResourceVoiceEnabled(), function(val)
-    self:SetCharResourceVoiceEnabled(val)
-    if val and SFA.PreviewFullResourceVoice then
-      SFA:PreviewFullResourceVoice()
-    end
-  end)
-  local resourceVoiceStyleDropDown = CreateResourceVoiceStyleDropDown(otherContent, 54, -284, self.db.other.resourceVoiceAlerts.voiceStyle or "male", function(val)
-    self.db.other.resourceVoiceAlerts.voiceStyle = (val == "female") and "female" or "male"
-    if SFA.PreviewFullResourceVoice then
-      SFA:PreviewFullResourceVoice()
-    end
-  end)
-
-  local resourceVoiceVolume = CreateSlider(otherContent, "Voice alert volume", 54, -348, 0, 10, 1, self.db.other.resourceVoiceAlerts.volume or 5, function(val)
+  local resourceVoiceVolume = CreateSlider(otherContent, "Proc ready voice volume", 24, -240, 0, 10, 1, self.db.other.resourceVoiceAlerts.volume or 5, function(val)
     self.db.other.resourceVoiceAlerts.volume = val
-    if SFA.PreviewFullResourceVoice then
-      SFA:PreviewFullResourceVoice()
-    end
   end)
 
-  local resourceVoiceCooldown = CreateSlider(otherContent, "Voice alert cooldown", 54, -404, 0, 5, 0.5, self.db.other.resourceVoiceAlerts.cooldown or 1.0, function(val)
+  local resourceVoiceCooldown = CreateSlider(otherContent, "Proc ready voice cooldown", 24, -296, 0, 5, 0.5, self.db.other.resourceVoiceAlerts.cooldown or 1.0, function(val)
     self.db.other.resourceVoiceAlerts.cooldown = val
   end)
 
+  -- 0.25.43: Blizzard's TTS API has no gender field (confirmed via source
+  -- research), so instead of a "male/female" toggle this lets the user
+  -- cycle through the actual TTS voices installed on their system and
+  -- preview the current pick.
+  local procReadyVoiceLabel = CreateLabel(otherContent, "Proc ready voice: " .. self:GetProcReadyVoiceLabel(), 24, -352, "GameFontHighlightSmall")
+  procReadyVoiceLabel:SetWidth(500)
+  procReadyVoiceLabel:SetJustifyH("LEFT")
+
+  local function RefreshProcReadyVoiceLabel()
+    procReadyVoiceLabel:SetText("Proc ready voice: " .. self:GetProcReadyVoiceLabel())
+  end
+
+  local procReadyVoicePrev = CreateButton(otherContent, "< Prev", 24, -378, 90, 22, function()
+    self:CycleProcReadyVoice(-1)
+    RefreshProcReadyVoiceLabel()
+  end)
+
+  local procReadyVoiceNext = CreateButton(otherContent, "Next >", 120, -378, 90, 22, function()
+    self:CycleProcReadyVoice(1)
+    RefreshProcReadyVoiceLabel()
+  end)
+
+  local procReadyVoiceTest = CreateButton(otherContent, "Test", 216, -378, 80, 22, function()
+    self:PreviewProcReadyVoice()
+  end)
 
   self.db.other.procReadyAlerts = self.db.other.procReadyAlerts or { enabled = false, spells = {} }
   self.db.other.procReadyAlerts.spells = self.db.other.procReadyAlerts.spells or {}
@@ -1419,7 +1382,7 @@ function SFA:CreateOptionsPanel()
   procReadyHelp:SetPoint("TOPLEFT", 24, -530)
   procReadyHelp:SetWidth(780)
   procReadyHelp:SetJustifyH("LEFT")
-  procReadyHelp:SetText("Add spell IDs or spell names to announce PROC READY once when they become usable and off cooldown in combat. Uses the existing voice volume and voice alert cooldown.")
+  procReadyHelp:SetText("Add spell IDs or spell names to announce PROC READY once when they become usable and off cooldown in combat. Uses the voice volume/cooldown sliders above.")
 
   local procReadyEnabled = CreateCheckbox(otherContent, "Enable proc ready voice alerts", 24, -570, self:GetCharProcReadyConfig() and self:GetCharProcReadyConfig().enabled == true or false, function(val)
     local cfg = self:GetCharProcReadyConfig()
@@ -1776,7 +1739,7 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
     procReadyInput = procReadyInput,
     procReadyRows = procReadyRows,
     procReadyEmpty = procReadyEmpty,
-    otherBuilderSpenderIndicator = otherBuilderSpenderIndicator,
+    procReadyVoiceLabel = procReadyVoiceLabel,
     cursorRingEnabled = cursorRingEnabled,
     cursorRingSwatch = cursorRingSwatch,
     rightClickBypass = rightClickBypassBoxes,

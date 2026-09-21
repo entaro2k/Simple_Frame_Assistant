@@ -166,119 +166,6 @@ function SFA:IsQuestUnit(unit)
 end
 
 
-local SFA_BUILDER_SPENDER_POWER = {
-  DRUID = 4,      -- Combo Points
-  ROGUE = 4,      -- Combo Points
-  PALADIN = 9,    -- Holy Power
-  MONK = 12,      -- Chi
-  WARLOCK = 7,    -- Soul Shards
-  EVOKER = 19,    -- Essence
-}
-
-local SFA_RESOURCE_VOICE_INFO = {
-  DRUID = { enum = "ComboPoints", fallback = 4, label = "COMBO FULL", file = "combo_full.ogg", tts = "Combo Points Full" },
-  ROGUE = { enum = "ComboPoints", fallback = 4, label = "COMBO FULL", file = "combo_full.ogg", tts = "Combo Points Full" },
-  PALADIN = { enum = "HolyPower", fallback = 9, label = "HOLY POWER FULL", file = "holy_power_full.ogg", tts = "Holy Power Full" },
-  MONK = { enum = "Chi", fallback = 12, label = "CHI FULL", file = "chi_full.ogg", tts = "Chi Full" },
-  WARLOCK = { enum = "SoulShards", fallback = 7, label = "SOUL SHARDS FULL", file = "soul_shards_full.ogg", tts = "Soul Shards Full" },
-  EVOKER = { enum = "Essence", fallback = 19, label = "ESSENCE FULL", file = "essence_full.ogg", tts = "Essence Full" },
-}
-
-function SFA:GetBuilderSpenderResourceInfo()
-  local _, classTag = UnitClass("player")
-  if not classTag then return nil end
-
-  local info = SFA_RESOURCE_VOICE_INFO[classTag]
-  if not info then return nil end
-
-  local powerType = info.fallback
-  if Enum and Enum.PowerType and info.enum and Enum.PowerType[info.enum] then
-    powerType = Enum.PowerType[info.enum]
-  end
-
-  return powerType, info
-end
-
-function SFA:GetBuilderSpenderPowerType()
-  local powerType = self:GetBuilderSpenderResourceInfo()
-  return powerType
-end
-
-function SFA:GetResourceVoiceVolumeFile(info)
-  if not (info and info.file) then return nil end
-
-  local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
-  local sliderVolume = tonumber(cfg and cfg.volume) or 5
-  sliderVolume = math.floor(sliderVolume + 0.5)
-
-  if sliderVolume < 0 then sliderVolume = 0 end
-  if sliderVolume > 10 then sliderVolume = 10 end
-  if sliderVolume == 0 then return nil, 0 end
-
-  -- PRO voice-pack logic: uses *_1.ogg and *_2.ogg variants.
-  -- Not random; it alternates predictably for less repetitive alerts.
-  local baseFile = info.file:gsub("%.ogg$", "")
-  self.resourceVoiceVariantIndex = (self.resourceVoiceVariantIndex == 1) and 2 or 1
-  local file = baseFile .. "_" .. tostring(self.resourceVoiceVariantIndex) .. ".ogg"
-
-  return file, sliderVolume
-end
-
-function SFA:GetResourceVoiceStyle()
-  local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
-  local style = cfg and cfg.voiceStyle or "male"
-  if style ~= "female" then
-    style = "male"
-  end
-  return style
-end
-
-function SFA:GetResourceVoiceLayerCount(sliderVolume)
-  sliderVolume = tonumber(sliderVolume) or 5
-  if sliderVolume <= 0 then return 0 end
-  if sliderVolume <= 3 then return 1 end
-  if sliderVolume <= 7 then return 2 end
-  return 3
-end
-
-function SFA:PlayResourceVoiceFile(ignoreFullCheck)
-  local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
-  if not cfg then return end
-  if not self:GetCharResourceVoiceEnabled() then return end
-  if not ignoreFullCheck and not self:IsBuilderSpenderFull() then return end
-
-  local powerType, info = self:GetBuilderSpenderResourceInfo()
-  if not (powerType and info) then return end
-
-  local sliderVolume = tonumber(cfg.volume) or 5
-  sliderVolume = math.floor(sliderVolume + 0.5)
-  if sliderVolume <= 0 then return end
-  if sliderVolume > 10 then sliderVolume = 10 end
-
-  -- Speak the resource name (e.g. "Combo Points Full") via TTS. No audio clips.
-  if info.tts then self:SpeakViaTTS(info.tts, sliderVolume) end
-end
-function SFA:PlayFullResourceVoiceReminder()
-  local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
-  if not (cfg and cfg.enabled) then return end
-  if not self:IsBuilderSpenderFull() then return end
-
-  local now = GetTime and GetTime() or 0
-  local cooldown = tonumber(cfg.cooldown) or 1.0
-  if cooldown < 0 then cooldown = 0 end
-  if self.lastResourceVoiceTime and (now - self.lastResourceVoiceTime) < cooldown then return end
-
-  self.lastResourceVoiceTime = now
-  self:PlayResourceVoiceFile(false)
-end
-
-function SFA:PreviewFullResourceVoice()
-  local now = GetTime and GetTime() or 0
-  if self.lastResourceVoicePreviewTime and (now - self.lastResourceVoicePreviewTime) < 0.35 then return end
-  self.lastResourceVoicePreviewTime = now
-  self:PlayResourceVoiceFile(true)
-end
-
 function SFA:GetProcReadyConfig()
   return self:GetCharProcReadyConfig()
 end
@@ -421,22 +308,87 @@ function SFA:IsProcReadySpellReady(spellID)
   return state.wasReady == true
 end
 
-function SFA:GetTTSVoiceObject()
-  if self._ttsVoiceCache ~= nil then
-    if self._ttsVoiceCache == false then return nil end
-    return self._ttsVoiceCache
+-- Returns the raw list of TTS voices the client currently reports (each
+-- entry a table with just {voiceID, name} -- Blizzard's TTS API does not
+-- expose a gender field at all, confirmed via source research 0.25.43, so
+-- there is no reliable way to offer a generic "male/female" choice; the
+-- Proc Ready voice picker below lets the user choose a specific voice by
+-- name instead). Cached, since the installed voice list doesn't change
+-- during a session.
+function SFA:GetTTSVoiceList()
+  if self._ttsVoiceListCache ~= nil then
+    if self._ttsVoiceListCache == false then return nil end
+    return self._ttsVoiceListCache
   end
-  local voice
+  local list
   if C_VoiceChat and C_VoiceChat.GetTtsVoices then
     local ok, v = pcall(C_VoiceChat.GetTtsVoices)
-    if ok and type(v) == "table" and v[1] then voice = v[1] end
+    if ok and type(v) == "table" and v[1] then list = v end
   end
-  if not voice and _G.GetTTSVoices then
+  if not list and _G.GetTTSVoices then
     local ok, v = pcall(_G.GetTTSVoices)
-    if ok and type(v) == "table" then voice = v[1] end
+    if ok and type(v) == "table" and v[1] then list = v end
   end
-  self._ttsVoiceCache = voice or false
-  return voice
+  self._ttsVoiceListCache = list or false
+  return list
+end
+
+-- Resolves the voice object to actually speak with: the user's configured
+-- choice (db.other.resourceVoiceAlerts.voiceID) if it's still present in
+-- the current voice list, otherwise falls back to whatever the client
+-- reports first -- covers both "never configured yet" and "configured
+-- voice no longer installed" (e.g. TTS language packs changed).
+function SFA:GetTTSVoiceObject()
+  local list = self:GetTTSVoiceList()
+  if not list or not list[1] then return nil end
+
+  local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
+  local wantID = cfg and cfg.voiceID
+  if wantID then
+    for _, v in ipairs(list) do
+      if v.voiceID == wantID then return v end
+    end
+  end
+  return list[1]
+end
+
+-- Human-readable label for the currently-resolved Proc Ready voice, for
+-- the options panel.
+function SFA:GetProcReadyVoiceLabel()
+  local voice = self:GetTTSVoiceObject()
+  return (voice and voice.name) or "No TTS voice found"
+end
+
+-- Steps the configured Proc Ready voice forward/back through the client's
+-- installed voice list (step = 1 or -1), wrapping around at the ends.
+function SFA:CycleProcReadyVoice(step)
+  local list = self:GetTTSVoiceList()
+  if not list or not list[1] then return end
+  self.db.other.resourceVoiceAlerts = self.db.other.resourceVoiceAlerts or {}
+  local cfg = self.db.other.resourceVoiceAlerts
+
+  local currentIndex = 1
+  if cfg.voiceID then
+    for i, v in ipairs(list) do
+      if v.voiceID == cfg.voiceID then
+        currentIndex = i
+        break
+      end
+    end
+  end
+
+  local total = #list
+  local nextIndex = ((currentIndex - 1 + (step or 1)) % total) + 1
+  cfg.voiceID = list[nextIndex].voiceID
+end
+
+-- Speaks a short, fixed test phrase with the currently configured voice
+-- and volume, so the user can preview a voice choice without waiting for
+-- a real proc.
+function SFA:PreviewProcReadyVoice()
+  local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
+  local sliderVolume = tonumber(cfg and cfg.volume) or 5
+  self:SpeakViaTTS("Simple Frame Assistant", sliderVolume)
 end
 
 -- Speak arbitrary text via the Blizzard TTS engine (the one that actually
@@ -670,54 +622,6 @@ function SFA:UpdateProcReadyAlerts()
   end
 end
 
-function SFA:CheckFullResourceVoiceOnReachFull()
-  local cfg = self.db and self.db.other and self.db.other.resourceVoiceAlerts
-  if not cfg then return end
-  if not self:GetCharResourceVoiceEnabled() then return end
-
-  local isFull = self:IsBuilderSpenderFull()
-  if isFull and not self.wasBuilderSpenderFull then
-    self.wasBuilderSpenderFull = true
-    self:PlayFullResourceVoiceReminder()
-  elseif not isFull then
-    self.wasBuilderSpenderFull = false
-  end
-end
-
-function SFA:IsBuilderSpenderFull()
-  if not (self.db and self.db.other and self.db.other.showBuilderSpenderIndicator) then
-    return false
-  end
-
-  local powerType = self:GetBuilderSpenderPowerType()
-  if not powerType then return false end
-
-  local current = UnitPower("player", powerType) or 0
-  local maxPower = UnitPowerMax("player", powerType) or 0
-
-  if maxPower <= 0 then return false end
-
-  return current >= maxPower
-end
-
-function SFA:ShouldShowComboCircle()
-  return self:IsBuilderSpenderFull()
-end
-
-function SFA:ApplyBuilderSpenderOrbVisual(orb)
-  if not orb then return end
-
-  -- fixed clean red color
-  orb:SetVertexColor(1, 0.15, 0.15, 1)
-
-  if orb.SFAPulse then
-    orb.SFAPulse:Stop()
-    orb.SFAPulse = nil
-  end
-
-  orb:SetScale(1)
-end
-
 function SFA:GetNameplateAnchor(frame)
   if not frame then return nil end
   if frame.UnitFrame and frame.UnitFrame.name then
@@ -815,23 +719,8 @@ function SFA:EnsureEnemyTargetXNameplate(frame)
     frame.SFATargetXMark = xMark
   end
 
-  -- Hide legacy indicators from older builds
-  if frame.SFAComboCircle then frame.SFAComboCircle:Hide() end
-  if frame.SFAComboDot and frame.SFAComboDot.Hide then frame.SFAComboDot:Hide() end
-
-  if not frame.SFAComboOrb then
-    local orb = frame:CreateTexture(nil, "OVERLAY")
-    orb:SetTexture("Interface\\COMMON\\Indicator-Red")
-    orb:SetSize(20, 20)
-    orb:Hide()
-    frame.SFAComboOrb = orb
-  end
-
   return frame.SFATargetXMark
 end
-
-
-
 
 
 function SFA:UpdateEnemyNameplateOverlays(unit)
@@ -855,45 +744,16 @@ function SFA:UpdateEnemyNameplateOverlays(unit)
     end
   end
 
-	local function HideComboOrb()
-	if frame.SFAComboOrb then
-    if frame.SFAComboOrb.SFAPulse then
-      frame.SFAComboOrb.SFAPulse:Stop()
-      frame.SFAComboOrb.SFAPulse = nil
-    end
-    frame.SFAComboOrb:SetScale(1)
-    frame.SFAComboOrb:Hide()
-	end
-	end
-
   if shouldShow then
     local anchor = self:GetNameplateAnchor(frame)
     if anchor then
       xMark:ClearAllPoints()
       xMark:SetPoint("BOTTOM", anchor, "TOP", 0, 2)
-
-      if frame.SFAComboOrb then
-        frame.SFAComboOrb:ClearAllPoints()
-        frame.SFAComboOrb:SetPoint("LEFT", xMark, "RIGHT", 4, 3)
-      end
     end
 
     xMark:Show()
-    if frame.SFAComboCircle then frame.SFAComboCircle:Hide() end
-    if frame.SFAComboDot then frame.SFAComboDot:Hide() end
-
-    if frame.SFAComboOrb and self:ShouldShowComboCircle() then
-      self:ApplyBuilderSpenderOrbVisual(frame.SFAComboOrb)
-      frame.SFAComboOrb:Show()
-      self:CheckFullResourceVoiceOnReachFull()
-    else
-      HideComboOrb()
-    end
   else
     xMark:Hide()
-    if frame.SFAComboCircle then frame.SFAComboCircle:Hide() end
-    if frame.SFAComboDot then frame.SFAComboDot:Hide() end
-    HideComboOrb()
   end
 end
 
@@ -907,9 +767,6 @@ function SFA:RefreshEnemyNameplateOverlays()
     else
       if frame.SFAEnemySpecIcon then frame.SFAEnemySpecIcon:Hide() end
       if frame.SFATargetXMark then frame.SFATargetXMark:Hide() end
-      if frame.SFAComboCircle then frame.SFAComboCircle:Hide() end
-      if frame.SFAComboDot then frame.SFAComboDot:Hide() end
-      if frame.SFAComboOrb then frame.SFAComboOrb:Hide() end
     end
   end
 end
@@ -2471,9 +2328,6 @@ function SFA:OnEvent(event, ...)
       if frame and frame.SFAQuestIcon then frame.SFAQuestIcon:Hide() end
       if frame and frame.SFAEnemySpecIcon then frame.SFAEnemySpecIcon:Hide() end
       if frame and frame.SFATargetXMark then frame.SFATargetXMark:Hide() end
-      if frame and frame.SFAComboCircle then frame.SFAComboCircle:Hide() end
-      if frame and frame.SFAComboDot then frame.SFAComboDot:Hide() end
-      if frame and frame.SFAComboOrb then frame.SFAComboOrb:Hide() end
     end
   elseif event == "QUEST_LOG_UPDATE" or event == "UNIT_QUEST_LOG_CHANGED" or event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED" or event == "SCENARIO_UPDATE" or event == "SCENARIO_CRITERIA_UPDATE" then
     self:RefreshQuestIndicators()
@@ -2481,13 +2335,6 @@ function SFA:OnEvent(event, ...)
   elseif event == "UPDATE_MOUSEOVER_UNIT" then
     if UnitExists("mouseover") then
       self:UpdateNameplateQuestIndicator("mouseover")
-    end
-
-  elseif event == "UNIT_POWER_UPDATE" or event == "UNIT_POWER_FREQUENT" then
-    local unit = ...
-    if unit == "player" then
-      self:RefreshEnemyNameplateOverlays()
-      self:CheckFullResourceVoiceOnReachFull()
     end
 
   elseif event == "PLAYER_TARGET_CHANGED" or event == "ARENA_PREP_OPPONENT_SPECIALIZATIONS" or event == "ARENA_OPPONENT_UPDATE" or event == "UNIT_NAME_UPDATE" then
@@ -2525,8 +2372,6 @@ function SFA:RegisterEvents()
   self.eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
   self.eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
   self.eventFrame:RegisterEvent("PLAYER_FOCUS_CHANGED")
-  self.eventFrame:RegisterEvent("UNIT_POWER_UPDATE")
-  self.eventFrame:RegisterEvent("UNIT_POWER_FREQUENT")
   self.eventFrame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
   self.eventFrame:RegisterEvent("SPELL_UPDATE_COOLDOWN")
   self.eventFrame:RegisterEvent("ACTIONBAR_UPDATE_COOLDOWN")
