@@ -42,6 +42,14 @@ SFA.defaults = {
       thickness = 3,
       color = { r = 0.25, g = 0.8, b = 1.0, a = 1.0 },
     },
+    -- 0.26.0, user-requested: auto-sell Poor/gray-quality ("junk") items
+    -- from bags whenever a merchant window opens. Off by default -- an
+    -- automatic vendor sell is destructive (no undo), so this only runs
+    -- if the user explicitly opts in. See Core.lua's SFA:SellJunkFromBags,
+    -- hooked to the MERCHANT_SHOW event.
+    autoSellJunk = {
+      enabled = false,
+    },
     -- 0.25.35/0.25.38: "modifier bypass" -- see Core.lua,
     -- SFA_ApplyRightClickBypassOverrides / SFA_ApplyLeftClickBypassOverrides.
     -- RightButton default preserves the exact pre-0.25.33 behavior

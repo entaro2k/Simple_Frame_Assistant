@@ -2342,6 +2342,13 @@ function SFA:OnEvent(event, ...)
     return
   end
 
+  if event == "MERCHANT_SHOW" then
+    if self.db and self.db.other and self.db.other.autoSellJunk and self.db.other.autoSellJunk.enabled then
+      self:SellJunkFromBags()
+    end
+    return
+  end
+
   if event == "PLAYER_SPECIALIZATION_CHANGED" then
     -- Click macros are stored per-spec, so reapply bindings and refresh the
     -- options panel so the displayed macros match the new specialization.
@@ -2461,6 +2468,7 @@ function SFA:RegisterEvents()
   self.eventFrame:RegisterEvent("SCENARIO_CRITERIA_UPDATE")
   self.eventFrame:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
   self.eventFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+  self.eventFrame:RegisterEvent("MERCHANT_SHOW")
 end
 
 SFA:RegisterEvents()
@@ -3202,6 +3210,88 @@ function SFA:ApplyCursorRingSettings()
   end
 
   frame:Show()
+end
+
+-- 0.26.0, user-requested (Smart Assist): auto-sell Poor/gray-quality
+-- ("junk") items from bags whenever a merchant window opens, if enabled in
+-- options. Selling to a vendor via UseContainerItem while a merchant frame
+-- is open is a normal, unrestricted addon action -- not a secure/protected
+-- call like click-cast's SetAttribute writes -- so this behaves identically
+-- on Midnight and Forever; no SFA_IsForeverClient() branch needed here,
+-- there's no client-specific difference to branch on.
+local function SFA_GetContainerAPI()
+  -- C_Container is the modern (Dragonflight+) bag API namespace. Checked as
+  -- a capability test (does the function exist?) rather than a client
+  -- version check -- that's the more direct signal for "which bag API this
+  -- particular client build actually has", and needs no maintenance if a
+  -- future client changes its interface number. Falls back to the older
+  -- global functions in case some Classic-lineage build doesn't have
+  -- C_Container yet.
+  if C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerItemInfo and C_Container.UseContainerItem then
+    return C_Container.GetContainerNumSlots, C_Container.GetContainerItemInfo, C_Container.UseContainerItem, true
+  end
+  return _G.GetContainerNumSlots, _G.GetContainerItemInfo, _G.UseContainerItem, false
+end
+
+function SFA:SellJunkFromBags()
+  local getNumSlots, getItemInfo, useItem, isModernAPI = SFA_GetContainerAPI()
+  if not (getNumSlots and getItemInfo and useItem) then
+    self:LogForce("auto-sell junk: no bag API available on this client, skipped")
+    return
+  end
+
+  local pollQuality = (Enum and Enum.ItemQuality and Enum.ItemQuality.Poor) or 0
+  local numBags = tonumber(NUM_BAG_SLOTS) or 4
+  local soldCount = 0
+  local preMoney = GetMoney and GetMoney() or nil
+
+  for bag = 0, numBags do
+    local okSlots, numSlots = pcall(getNumSlots, bag)
+    numSlots = (okSlots and numSlots) or 0
+    for slot = 1, numSlots do
+      local quality, hasNoValue, itemID, locked
+
+      if isModernAPI then
+        local ok, info = pcall(getItemInfo, bag, slot)
+        if ok and type(info) == "table" then
+          quality, hasNoValue, itemID, locked = info.quality, info.hasNoValue, info.itemID, info.isLocked
+        end
+      else
+        -- Old (pre-Dragonflight) signature:
+        -- texture, itemCount, isLocked, quality, isReadable, hasLoot,
+        -- itemLink, isFiltered, hasNoValue, itemID, isBound
+        local ok, texture, itemCount, isLocked, q, isReadable, hasLoot, itemLink, isFiltered, noValue, iID =
+          pcall(getItemInfo, bag, slot)
+        if ok then
+          quality, hasNoValue, itemID, locked = q, noValue, iID, isLocked
+        end
+      end
+
+      if itemID and not locked and quality == pollQuality and not hasNoValue then
+        pcall(useItem, bag, slot)
+        soldCount = soldCount + 1
+      end
+    end
+  end
+
+  if soldCount == 0 then return end
+
+  self:LogForce("auto-sell junk: attempted to sell %d item(s)", soldCount)
+  if C_Timer and C_Timer.After then
+    C_Timer.After(1.0, function()
+      if not (SFA and SFA.db) then return end
+      local postMoney = GetMoney and GetMoney() or nil
+      local gained = (preMoney and postMoney) and (postMoney - preMoney) or nil
+      if DEFAULT_CHAT_FRAME then
+        if gained and gained > 0 then
+          local coinText = (GetCoinTextureString and GetCoinTextureString(gained)) or (gained .. " copper")
+          DEFAULT_CHAT_FRAME:AddMessage(string.format("|cff7cc6ffSimple Frame Assistant:|r sold %d junk item(s) for %s.", soldCount, coinText))
+        else
+          DEFAULT_CHAT_FRAME:AddMessage(string.format("|cff7cc6ffSimple Frame Assistant:|r sold %d junk item(s).", soldCount))
+        end
+      end
+    end)
+  end
 end
 
 function SFA_UpdateCharacterGCD()

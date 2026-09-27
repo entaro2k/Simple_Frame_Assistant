@@ -17,6 +17,7 @@ Most click-cast addons come with their own unit frames, which means re-doing you
 ## Smart Assist
 
 - **Proc-ready voice alerts** — announces a chosen spell out loud, once, the moment it comes off cooldown and is usable, using the game's built-in Text-to-Speech. Pick the exact TTS voice installed on your system, with Prev/Next/Test controls, plus adjustable volume and cooldown.
+- **Auto-sell junk** (optional, off by default) — automatically sells gray (Poor quality) items from your bags whenever you open a merchant window.
 - **Cursor Ring** — a colored ring around your mouse cursor, adjustable color, size, and thickness.
 - Quest-objective `!` marker on nameplates.
 - Enemy target `X` marker on the current target's nameplate.

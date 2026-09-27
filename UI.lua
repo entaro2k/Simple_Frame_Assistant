@@ -968,6 +968,9 @@ function SFA:RefreshOptionsPanel()
     local c = db.other.cursorRing.color
     self.options.cursorRingSwatch.bg:SetColorTexture(c.r or 1, c.g or 1, c.b or 1, 1)
   end
+  if self.options.autoSellJunkEnabled and db.other and db.other.autoSellJunk then
+    self.options.autoSellJunkEnabled:SetChecked(db.other.autoSellJunk.enabled)
+  end
   if self.options.rightClickBypass then
     local cfg = db.other and db.other.modifierBypass and db.other.modifierBypass.RightButton
     for mod, box in pairs(self.options.rightClickBypass) do
@@ -1551,7 +1554,22 @@ function SFA:CreateOptionsPanel()
     end
   end)
 
-  otherContent:SetHeight(1120)
+  ----------------------------------------------------------------------
+  -- Auto-Sell Junk (0.26.0, user-requested): sells Poor/gray-quality bag
+  -- items automatically whenever a merchant window opens. Off by default
+  -- (see SFA.defaults.other.autoSellJunk in Config.lua) -- see Core.lua's
+  -- SFA:SellJunkFromBags for the implementation.
+  ----------------------------------------------------------------------
+  self.db.other.autoSellJunk = self.db.other.autoSellJunk or {}
+  if self.db.other.autoSellJunk.enabled == nil then self.db.other.autoSellJunk.enabled = false end
+
+  local autoSellJunkHeader = CreateSectionHeader(otherContent, "Auto-Sell Junk", 18, -1080)
+
+  local autoSellJunkEnabled = CreateCheckbox(otherContent, "Automatically sell gray (Poor quality) items at merchants", 24, -1116, self.db.other.autoSellJunk.enabled, function(val)
+    self.db.other.autoSellJunk.enabled = val
+  end)
+
+  otherContent:SetHeight(1170)
 
 -- ---------------------------------------------------------------------
 -- Debug panel: enable/disable chat debug prints, reload the UI, and view
@@ -1742,6 +1760,7 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
     procReadyVoiceLabel = procReadyVoiceLabel,
     cursorRingEnabled = cursorRingEnabled,
     cursorRingSwatch = cursorRingSwatch,
+    autoSellJunkEnabled = autoSellJunkEnabled,
     rightClickBypass = rightClickBypassBoxes,
     leftClickBypass = leftClickBypassBoxes,
     friendlySection = friendlySection,
