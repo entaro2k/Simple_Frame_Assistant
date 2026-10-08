@@ -42,6 +42,16 @@ end
 -- Midnight retail is 120100+. The threshold is set well below Midnight's
 -- range so any future Classic-lineage flavor (which have historically
 -- always used much smaller interface numbers) is also caught by it.
+--
+-- IMPORTANT (0.26.2/0.26.3): this is a CLIENT-IDENTITY check, not a
+-- capability check -- it returns true for Classic Era too (interface
+-- 11509), not just Forever. It is NOT used to gate the click-cast guard
+-- (see SFA_RegisterClickFrame, which instead attempts the real operation
+-- in a pcall and judges success/failure from that directly -- a global-
+-- existence probe was tried in 0.26.2 and reverted in 0.26.3 because it
+-- broke click-cast on retail too: the global it checked for is never
+-- visible to addon code on ANY client, working or not). Kept here only
+-- for diagnostics/logging (which client flavor is this login on).
 local SFA_FOREVER_INTERFACE_THRESHOLD = 100000
 function SFA_IsForeverClient()
   local ok, tocVersion = pcall(function() return select(4, GetBuildInfo()) end)
@@ -1097,25 +1107,56 @@ local SFA_ClickApplySeq = 0
 -- shared registration function is sufficient to prevent the crash from
 -- every call site (arena/friendly/target-focus, and any Debug-tab
 -- diagnostic button) without touching any of them individually.
+--
+-- 0.26.2 (REVERTED in 0.26.3, see below): briefly tried gating this on
+-- SFA_IsForeverClient() being replaced with a direct check for
+-- `_G.loadstring_untainted`'s existence. That check is WRONG and broke
+-- click-cast on retail/Midnight too, confirmed live by the user --
+-- `loadstring_untainted` is almost certainly never exposed to addon-level
+-- Lua at all (on ANY client, including a perfectly healthy one): letting
+-- addons read/call it directly would hand every addon a way to compile
+-- arbitrary code as "untainted", which is exactly the kind of hole
+-- Blizzard's taint system exists to prevent. So `_G.loadstring_untainted`
+-- reads as nil from our side regardless of whether Blizzard's OWN,
+-- privileged RestrictedExecution.lua can see and use it internally --
+-- the probe was testing something we can never actually observe, on any
+-- client, working or not.
+--
+-- 0.26.3 fix: instead of probing a global we can't see, ATTEMPT the real
+-- operation (SecureHandlerSetFrameRef, which is what actually triggers
+-- Blizzard's secure-snippet (re)compile) wrapped in pcall, and judge
+-- success/failure from that directly. This is the same principle other
+-- addon authors landed on for this exact Forever bug (see EllesmereUI's
+-- fix, titled "decide snippet support by running one, not by a scrubbed
+-- global") -- and it keeps every property 0.26.2 was trying for: correct
+-- on retail (pcall succeeds there, exactly as it always did pre-0.26.2),
+-- correct per-client rather than guessing from version (each client's
+-- real compile attempt either succeeds or fails on its own), and
+-- self-healing (the moment a given client's engine is fixed, the very
+-- next pcall here succeeds and click-cast resumes with no addon update).
 local function SFA_WarnForeverClickCastUnavailable()
   if SFA._foreverClickCastWarned then return end
   SFA._foreverClickCastWarned = true
-  SFA:LogForce("click-cast disabled on this client: loadstring_untainted is missing (Blizzard engine gap, not an SFA bug)")
+  SFA:LogForce("click-cast disabled on this client: SecureHandlerSetFrameRef failed (Blizzard engine gap, not an SFA bug)")
   if DEFAULT_CHAT_FRAME then
-    DEFAULT_CHAT_FRAME:AddMessage("|cffff5555Simple Frame Assistant:|r click-cast is currently unavailable on WoW Forever (beta) -- Blizzard's client is missing an engine feature secure click macros need. This will start working on its own once Blizzard fixes it, no addon update needed.")
+    DEFAULT_CHAT_FRAME:AddMessage("|cffff5555Simple Frame Assistant:|r click-cast is currently unavailable on this client -- Blizzard's client is missing an engine feature secure click macros need (seen so far on the WoW Forever beta). This will start working on its own once Blizzard fixes it, no addon update needed.")
   end
 end
 
 local function SFA_RegisterClickFrame(frame, refKey)
   if not frame then return end
-  if SFA_IsForeverClient and SFA_IsForeverClient() then
+  refKey = refKey or frame:GetName()
+  if not refKey then return end
+  local ok = pcall(SecureHandlerSetFrameRef, SFA_ClickDriver, refKey, frame)
+  if not ok then
     SFA_WarnForeverClickCastUnavailable()
     return
   end
-  refKey = refKey or frame:GetName()
-  if not refKey then return end
+  if not SFA._clickCastConfirmedWorking then
+    SFA._clickCastConfirmedWorking = true
+    SFA:LogForce("click-cast: SecureHandlerSetFrameRef OK on this client")
+  end
   frame.sfaNativeClickRefKey = refKey
-  SecureHandlerSetFrameRef(SFA_ClickDriver, refKey, frame)
 end
 
 -- ---------------------------------------------------------------------
@@ -2305,6 +2346,15 @@ function SFA:OnEvent(event, ...)
     -- forgot to enable debug) -- the fastest way to confirm what
     -- SFA_IsForeverClient() actually saw on a given login, without
     -- needing a separate diagnostic round-trip.
+    -- 0.26.2 added a "hasSecureSnippets" field here, computed by probing
+    -- `_G.loadstring_untainted` directly. REMOVED in 0.26.3: that probe
+    -- is meaningless (always false, on every client, because addon code
+    -- can never see that global at all -- see SFA_RegisterClickFrame's
+    -- notes). The real, trustworthy signal for whether click-cast's
+    -- secure-snippet compile actually works on this login now comes from
+    -- the "click-cast: SecureHandlerSetFrameRef OK" / "click-cast
+    -- disabled..." lines logged the first time SFA_RegisterClickFrame
+    -- actually attempts it, not from anything logged here.
     do
       local okBI, verStr, buildNum, buildDate, tocVersion = pcall(GetBuildInfo)
       self:LogForce("login: version=%s buildNum=%s date=%s toc=%s isForever=%s",
