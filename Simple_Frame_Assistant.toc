@@ -1,10 +1,11 @@
 ## IconTexture: Interface\AddOns\Simple_Frame_Assistant\Icon
-## Interface: 120100, 120105, 16001, 11509
+## Interface: 120100, 120105, 120107, 16001, 11509
+## X-Curse-Project-ID: 1512937
 ## Title: Simple Frame Assistant
 ## Notes: Simple friendly/enemy frame assistant. Midnight, WoW Forever (beta), and Classic Era.
 ## Author: En Taro
 ## Category: User Interface
-## Version: 0.26.3
+## Version: 0.26.4
 ## SavedVariables: SFA_DB, SFA_DebugLog
 ## SavedVariablesPerCharacter: SFA_DB_Char
 
