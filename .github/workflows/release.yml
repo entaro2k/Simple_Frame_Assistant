@@ -1,0 +1,23 @@
+name: Release AddOn
+
+# Fires whenever a git tag is pushed (any tag name). Create a tag matching
+# the ## Version: in Simple_Frame_Assistant.toc (e.g. `git tag 0.26.3 && git
+# push origin 0.26.3`) to trigger a release.
+on:
+  push:
+    tags:
+      - '**'
+
+env:
+  CF_API_KEY: ${{ secrets.CF_API_KEY }}
+  GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: BigWigsMods/packager@v2

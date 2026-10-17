@@ -1,0 +1,4 @@
+package-as: Simple_Frame_Assistant
+
+ignore:
+  - build.ps1
