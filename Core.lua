@@ -2239,7 +2239,17 @@ function SFA:UpdateMinimapButtonPosition()
   if not db then return end
 
   local angle = math.rad(tonumber(db.angle) or 220)
-  local radius = 104
+  -- 0.26.5, user-reported: the icon sat visibly offset from the minimap's
+  -- edge on Classic Era. Root cause -- this used a HARD-CODED radius (104)
+  -- tuned for Midnight/Forever's default minimap size, but Classic Era's
+  -- Minimap frame is actually smaller (its default width is well under
+  -- Retail's), so the same fixed radius placed the button too far out from
+  -- a smaller circle. Fix: derive the radius from the minimap's own
+  -- current width every time, so the button sits right at its edge no
+  -- matter which client/version this is, or whether the minimap itself
+  -- has been resized (by Edit Mode or another addon).
+  local minimapRadius = (Minimap:GetWidth() or 140) / 2 + 5
+  local radius = minimapRadius
   local x = math.cos(angle) * radius
   local y = math.sin(angle) * radius
 
