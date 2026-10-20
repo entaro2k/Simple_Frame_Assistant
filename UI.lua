@@ -1343,11 +1343,16 @@ function SFA:CreateOptionsPanel()
   if self.db.other.resourceVoiceAlerts.cooldown == nil then self.db.other.resourceVoiceAlerts.cooldown = 1.0 end
   if self.db.other.resourceVoiceAlerts.volume == nil then self.db.other.resourceVoiceAlerts.volume = 5 end
 
-  local resourceVoiceVolume = CreateSlider(otherContent, "Proc ready voice volume", 24, -240, 0, 10, 1, self.db.other.resourceVoiceAlerts.volume or 5, function(val)
+  -- 0.26.6, user-requested: Proc Ready Alerts moved to be the LAST section
+  -- in the Smart Assist tab (was previously sandwiched between the top
+  -- checkboxes and Cursor Ring/Auto-Sell Junk). Cursor Ring and Auto-Sell
+  -- Junk moved up to fill the gap left behind -- see their SetPoint y
+  -- values further below, which now continue directly from -176.
+  local resourceVoiceVolume = CreateSlider(otherContent, "Proc ready voice volume", 24, -500, 0, 10, 1, self.db.other.resourceVoiceAlerts.volume or 5, function(val)
     self.db.other.resourceVoiceAlerts.volume = val
   end)
 
-  local resourceVoiceCooldown = CreateSlider(otherContent, "Proc ready voice cooldown", 24, -296, 0, 5, 0.5, self.db.other.resourceVoiceAlerts.cooldown or 1.0, function(val)
+  local resourceVoiceCooldown = CreateSlider(otherContent, "Proc ready voice cooldown", 24, -556, 0, 5, 0.5, self.db.other.resourceVoiceAlerts.cooldown or 1.0, function(val)
     self.db.other.resourceVoiceAlerts.cooldown = val
   end)
 
@@ -1355,7 +1360,7 @@ function SFA:CreateOptionsPanel()
   -- research), so instead of a "male/female" toggle this lets the user
   -- cycle through the actual TTS voices installed on their system and
   -- preview the current pick.
-  local procReadyVoiceLabel = CreateLabel(otherContent, "Proc ready voice: " .. self:GetProcReadyVoiceLabel(), 24, -352, "GameFontHighlightSmall")
+  local procReadyVoiceLabel = CreateLabel(otherContent, "Proc ready voice: " .. self:GetProcReadyVoiceLabel(), 24, -612, "GameFontHighlightSmall")
   procReadyVoiceLabel:SetWidth(500)
   procReadyVoiceLabel:SetJustifyH("LEFT")
 
@@ -1363,31 +1368,31 @@ function SFA:CreateOptionsPanel()
     procReadyVoiceLabel:SetText("Proc ready voice: " .. self:GetProcReadyVoiceLabel())
   end
 
-  local procReadyVoicePrev = CreateButton(otherContent, "< Prev", 24, -378, 90, 22, function()
+  local procReadyVoicePrev = CreateButton(otherContent, "< Prev", 24, -638, 90, 22, function()
     self:CycleProcReadyVoice(-1)
     RefreshProcReadyVoiceLabel()
   end)
 
-  local procReadyVoiceNext = CreateButton(otherContent, "Next >", 120, -378, 90, 22, function()
+  local procReadyVoiceNext = CreateButton(otherContent, "Next >", 120, -638, 90, 22, function()
     self:CycleProcReadyVoice(1)
     RefreshProcReadyVoiceLabel()
   end)
 
-  local procReadyVoiceTest = CreateButton(otherContent, "Test", 216, -378, 80, 22, function()
+  local procReadyVoiceTest = CreateButton(otherContent, "Test", 216, -638, 80, 22, function()
     self:PreviewProcReadyVoice()
   end)
 
   self.db.other.procReadyAlerts = self.db.other.procReadyAlerts or { enabled = false, spells = {} }
   self.db.other.procReadyAlerts.spells = self.db.other.procReadyAlerts.spells or {}
 
-  local procReadyHeader = CreateSectionHeader(otherContent, "Proc Ready Alerts", 18, -500)
+  local procReadyHeader = CreateSectionHeader(otherContent, "Proc Ready Alerts", 18, -760)
   local procReadyHelp = otherContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  procReadyHelp:SetPoint("TOPLEFT", 24, -530)
+  procReadyHelp:SetPoint("TOPLEFT", 24, -790)
   procReadyHelp:SetWidth(780)
   procReadyHelp:SetJustifyH("LEFT")
   procReadyHelp:SetText("Add spell IDs or spell names to announce PROC READY once when they become usable and off cooldown in combat. Uses the voice volume/cooldown sliders above.")
 
-  local procReadyEnabled = CreateCheckbox(otherContent, "Enable proc ready voice alerts", 24, -570, self:GetCharProcReadyConfig() and self:GetCharProcReadyConfig().enabled == true or false, function(val)
+  local procReadyEnabled = CreateCheckbox(otherContent, "Enable proc ready voice alerts", 24, -830, self:GetCharProcReadyConfig() and self:GetCharProcReadyConfig().enabled == true or false, function(val)
     local cfg = self:GetCharProcReadyConfig()
     if cfg then cfg.enabled = val end
     if not val and SFA.ResetProcReadyStates then SFA:ResetProcReadyStates() end
@@ -1395,7 +1400,7 @@ function SFA:CreateOptionsPanel()
 
   local procReadyInput = CreateFrame("EditBox", nil, otherContent, "InputBoxTemplate")
   procReadyInput:SetSize(220, 24)
-  procReadyInput:SetPoint("TOPLEFT", 24, -610)
+  procReadyInput:SetPoint("TOPLEFT", 24, -870)
   procReadyInput:SetAutoFocus(false)
   procReadyInput:SetNumeric(false)
 
@@ -1408,7 +1413,7 @@ function SFA:CreateOptionsPanel()
 
   local procReadyAutocomplete = CreateSpellAutocomplete(otherContent, procReadyInput)
 
-  local procReadyAdd = CreateButton(otherContent, "Add", 254, -608, 70, 24, function()
+  local procReadyAdd = CreateButton(otherContent, "Add", 254, -868, 70, 24, function()
     local spellID, spellName = ResolveSpellInput(procReadyInput:GetText())
     if spellID then
       SFA:AddProcReadySpell(spellID)
@@ -1440,14 +1445,14 @@ function SFA:CreateOptionsPanel()
   end)
 
   local procReadyEmpty = otherContent:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  procReadyEmpty:SetPoint("TOPLEFT", 24, -646)
+  procReadyEmpty:SetPoint("TOPLEFT", 24, -906)
   procReadyEmpty:SetText("No proc ready spell IDs yet.")
 
   local procReadyRows = {}
   for i = 1, 10 do
     local row = CreateFrame("Frame", nil, otherContent)
     row:SetSize(760, 22)
-    row:SetPoint("TOPLEFT", 24, -646 - ((i - 1) * 22))
+    row:SetPoint("TOPLEFT", 24, -906 - ((i - 1) * 22))
     row.label = CreateLabel(row, "", 0, 0, "GameFontHighlightSmall")
     row.remove = CreateButton(row, "Remove", 310, 2, 80, 20, function(btn)
       if btn.spellID then
@@ -1476,28 +1481,28 @@ function SFA:CreateOptionsPanel()
   if cursorRingCfg.color.b == nil then cursorRingCfg.color.b = 1.0 end
   if cursorRingCfg.color.a == nil then cursorRingCfg.color.a = 1.0 end
 
-  local cursorRingHeader = CreateSectionHeader(otherContent, "Cursor Ring", 18, -900)
+  local cursorRingHeader = CreateSectionHeader(otherContent, "Cursor Ring", 18, -220)
 
-  local cursorRingEnabled = CreateCheckbox(otherContent, "Show a colored ring around the mouse cursor", 24, -936, cursorRingCfg.enabled, function(val)
+  local cursorRingEnabled = CreateCheckbox(otherContent, "Show a colored ring around the mouse cursor", 24, -256, cursorRingCfg.enabled, function(val)
     cursorRingCfg.enabled = val
     if SFA.ApplyCursorRingSettings then SFA:ApplyCursorRingSettings() end
   end)
 
-  local cursorRingSize = CreateSlider(otherContent, "Ring size", 24, -972, 12, 80, 1, cursorRingCfg.size, function(val)
+  local cursorRingSize = CreateSlider(otherContent, "Ring size", 24, -292, 12, 80, 1, cursorRingCfg.size, function(val)
     cursorRingCfg.size = val
     if SFA.ApplyCursorRingSettings then SFA:ApplyCursorRingSettings() end
   end)
 
-  local cursorRingThickness = CreateSlider(otherContent, "Ring thickness", 300, -972, 1, 20, 1, cursorRingCfg.thickness, function(val)
+  local cursorRingThickness = CreateSlider(otherContent, "Ring thickness", 300, -292, 1, 20, 1, cursorRingCfg.thickness, function(val)
     cursorRingCfg.thickness = val
     if SFA.ApplyCursorRingSettings then SFA:ApplyCursorRingSettings() end
   end)
 
-  local cursorRingColorLabel = CreateLabel(otherContent, "Ring color", 24, -1044, "GameFontHighlight")
+  local cursorRingColorLabel = CreateLabel(otherContent, "Ring color", 24, -364, "GameFontHighlight")
 
   local cursorRingSwatch = CreateFrame("Button", nil, otherContent)
   cursorRingSwatch:SetSize(28, 28)
-  cursorRingSwatch:SetPoint("TOPLEFT", 120, -1040)
+  cursorRingSwatch:SetPoint("TOPLEFT", 120, -360)
 
   local swatchBorder = cursorRingSwatch:CreateTexture(nil, "BACKGROUND")
   swatchBorder:SetPoint("TOPLEFT", -2, 2)
@@ -1563,9 +1568,9 @@ function SFA:CreateOptionsPanel()
   self.db.other.autoSellJunk = self.db.other.autoSellJunk or {}
   if self.db.other.autoSellJunk.enabled == nil then self.db.other.autoSellJunk.enabled = false end
 
-  local autoSellJunkHeader = CreateSectionHeader(otherContent, "Auto-Sell Junk", 18, -1080)
+  local autoSellJunkHeader = CreateSectionHeader(otherContent, "Auto-Sell Junk", 18, -400)
 
-  local autoSellJunkEnabled = CreateCheckbox(otherContent, "Automatically sell gray (Poor quality) items at merchants", 24, -1116, self.db.other.autoSellJunk.enabled, function(val)
+  local autoSellJunkEnabled = CreateCheckbox(otherContent, "Automatically sell gray (Poor quality) items at merchants", 24, -436, self.db.other.autoSellJunk.enabled, function(val)
     self.db.other.autoSellJunk.enabled = val
   end)
 
