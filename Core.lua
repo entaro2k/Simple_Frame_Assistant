@@ -98,16 +98,22 @@ function SFA:Log(fmt, ...)
   end
 end
 
--- Like SFA:Log, but bypasses the Enable-debug checkbox entirely -- reserved
--- for diagnostics that fire from live gameplay (e.g. a click on the native
--- arena frame), where relying on the user to remember to enable debug first
--- has repeatedly wasted whole test rounds (see project notes, 0.24.28/29).
--- Capped at SFA_FORCE_LOG_MAX total entries for the addon's lifetime this
--- session, so an unexpectedly chatty event can't quietly fill/roll the
--- entire 400-entry ring buffer on its own.
+-- Like SFA:Log, but was previously bypassing the Enable-debug checkbox
+-- entirely -- meant for diagnostics that fire from live gameplay (e.g. a
+-- click on the native arena frame, or auto-sell junk), where relying on the
+-- user to remember to enable debug first had repeatedly wasted whole test
+-- rounds (see project notes, 0.24.28/29). 0.26.10, user-reported: this meant
+-- the debug log kept quietly filling up during normal play (e.g. every
+-- auto-sell-junk run) even with "Enable aura debug" left OFF, which the user
+-- does not want -- when the checkbox is disabled, NOTHING should be logged.
+-- So this is now gated exactly like SFA:Log; still capped at
+-- SFA_FORCE_LOG_MAX total entries for the addon's lifetime this session on
+-- top of that, so an unexpectedly chatty event still can't quietly fill/roll
+-- the entire 400-entry ring buffer on its own once debug IS enabled.
 local SFA_ForceLogCount = 0
 local SFA_FORCE_LOG_MAX = 40
 function SFA:LogForce(fmt, ...)
+  if not self.auraDebug then return end
   if SFA_ForceLogCount >= SFA_FORCE_LOG_MAX then return end
   SFA_ForceLogCount = SFA_ForceLogCount + 1
   local okFmt, msg = pcall(string.format, fmt, ...)

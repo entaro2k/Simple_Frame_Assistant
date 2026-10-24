@@ -1170,6 +1170,18 @@ function SFA:RefreshProcReadyUI()
   end
 end
 
+-- 0.26.8 fix: forward-declared at file scope (not inside CreateOptionsPanel)
+-- so SFA:RegisterSlash()'s /sfadebug handler -- a separate top-level
+-- function defined further below -- can actually see this frame. It was
+-- previously `local debugPanel = ...` INSIDE CreateOptionsPanel, which made
+-- it a local to that function only; once CreateOptionsPanel returned, that
+-- local was gone and RegisterSlash's reference to the bare name `debugPanel`
+-- silently resolved to a nil GLOBAL instead (error was swallowed because the
+-- old handler had no pcall -- this is exactly why /sfadebug "did nothing").
+-- CreateOptionsPanel assigns into this same upvalue further below (without
+-- `local`), so both functions now share the one frame.
+local debugPanel
+
 function SFA:CreateOptionsPanel()
   local root = CreateCanvasFrame(addonName .. "OptionsRoot")
   root.name = "Simple Frame Assistant"
@@ -1583,7 +1595,7 @@ function SFA:CreateOptionsPanel()
 -- SavedVariables folder, but this panel lets it be read/cleared in-game
 -- too, without needing to dig through files.
 -- ---------------------------------------------------------------------
-local debugPanel = CreateCanvasFrame(addonName .. "OptionsDebug")
+debugPanel = CreateCanvasFrame(addonName .. "OptionsDebug")
 debugPanel.OnRefresh = function() C_Timer.After(0, function() if SFA and SFA.RefreshOptionsPanel then SFA:RefreshOptionsPanel() end end) end
 -- Belt-and-suspenders: also refresh directly on this specific panel's
 -- OnShow, in case the Settings canvas system's OnRefresh callback doesn't
@@ -1689,6 +1701,41 @@ debugLogScroll:SetScrollChild(debugLogEdit)
 
 debugContent:SetHeight(792)
 
+-- 0.26.7, user-requested: Debug is no longer a Settings subcategory (see
+-- the registration block further below), so it's no longer embedded in
+-- Blizzard's Settings canvas and positioned/chromed by that system. It
+-- needs to behave like a normal standalone popup instead -- backdrop,
+-- close button, draggable, hidden by default, shown/hidden only via
+-- /sfadebug (see SFA:RegisterSlash). The existing OnShow hook above
+-- already refreshes the log display no matter how the frame gets shown.
+debugPanel:SetFrameStrata("DIALOG")
+debugPanel:SetToplevel(true)
+debugPanel:SetClampedToScreen(true)
+debugPanel:SetPoint("CENTER")
+debugPanel:SetMovable(true)
+debugPanel:EnableMouse(true)
+debugPanel:RegisterForDrag("LeftButton")
+debugPanel:SetScript("OnDragStart", debugPanel.StartMoving)
+debugPanel:SetScript("OnDragStop", debugPanel.StopMovingOrSizing)
+
+if not debugPanel.SetBackdrop and BackdropTemplateMixin then
+  Mixin(debugPanel, BackdropTemplateMixin)
+end
+if debugPanel.SetBackdrop then
+  debugPanel:SetBackdrop({
+    bgFile = "Interface/DialogFrame/UI-DialogBox-Background",
+    edgeFile = "Interface/DialogFrame/UI-DialogBox-Border",
+    tile = true, tileSize = 32, edgeSize = 32,
+    insets = { left = 11, right = 12, top = 12, bottom = 11 },
+  })
+end
+
+local debugCloseBtn = CreateFrame("Button", nil, debugPanel, "UIPanelCloseButton")
+debugCloseBtn:SetPoint("TOPRIGHT", -2, -2)
+debugCloseBtn:SetScript("OnClick", function() debugPanel:Hide() end)
+
+debugPanel:Hide()
+
 -- Populates the log text box from SFA_DebugLog. Called by the "Show log
 -- lines" / "Clear log" buttons, and once automatically whenever the Debug
 -- subcategory is displayed (via OnRefresh above -> RefreshOptionsPanel).
@@ -1743,7 +1790,12 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
     Settings.RegisterCanvasLayoutSubcategory(category, friendlyPanel, "Friendly Frame")
     Settings.RegisterCanvasLayoutSubcategory(category, enemyPanel, "Enemy Frame")
     Settings.RegisterCanvasLayoutSubcategory(category, otherPanel, "Smart Assist")
-    Settings.RegisterCanvasLayoutSubcategory(category, debugPanel, "Debug")
+    -- 0.26.7, user-requested: Debug is deliberately NOT registered as a
+    -- Settings subcategory anymore, so it no longer shows up in the
+    -- Options menu list. It's still fully functional -- see the
+    -- standalone-window setup near its panel definition above -- just
+    -- reached via /sfadebug instead of cluttering the menu for players
+    -- who never need it.
     self.settingsGeneralSubcategory = generalSubcategory
   end
 
@@ -1870,6 +1922,30 @@ function SFA:RegisterSlash()
   SlashCmdList.SFASCANARENA = function()
     if SFA.ScanArenaFrames then
       SFA:ScanArenaFrames()
+    end
+  end
+
+  -- 0.26.7, user-requested: Debug panel removed from the Options menu
+  -- (see its standalone-window setup near its panel definition) -- this
+  -- is now the only way to open it.
+  SLASH_SFADEBUG1 = "/sfadebug"
+  SlashCmdList.SFADEBUG = function()
+    -- 0.26.8: wrapped in pcall + a chat confirmation, because Lua errors
+    -- are silent by default (user has to opt in to see them), so a
+    -- broken Show() would otherwise look like "the command does nothing"
+    -- with no clue why. This surfaces the real reason either way.
+    local ok, err = pcall(function()
+      if debugPanel:IsShown() then
+        debugPanel:Hide()
+      else
+        debugPanel:Show()
+        debugPanel:Raise()
+      end
+    end)
+    if not ok then
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff5555SFA /sfadebug error:|r " .. tostring(err))
+    else
+      DEFAULT_CHAT_FRAME:AddMessage("|cff7cc6ffSFA:|r debug panel " .. (debugPanel:IsShown() and "shown" or "hidden"))
     end
   end
 end
