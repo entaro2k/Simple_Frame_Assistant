@@ -129,6 +129,380 @@ local function Print(msg)
 end
 SFA.Print = Print
 
+-- ---------------------------------------------------------------------
+-- 0.26.15, user-requested: Backup/Restore -- export macros and/or SFA
+-- settings as a single copy-pasteable string (same idea as HealBot's
+-- import/export strings), so they can be carried to another character,
+-- realm, or client flavor (e.g. retail -> Classic Era) by hand.
+--
+-- Deliberately does NOT use load()/loadstring() to parse an imported
+-- string. That string may get pasted from someone else's export (shared on
+-- a forum/Discord, etc.), so it has to be treated as untrusted input --
+-- loadstring()'ing arbitrary pasted text would let a maliciously crafted
+-- "backup string" execute arbitrary Lua with full addon privileges. Instead
+-- this hand-rolls a tiny length-prefixed serialization format (think
+-- netstrings: "s3:foo" = a 3-byte string "foo", "t2:" = a table with 2
+-- key/value pairs following) that is parsed with plain string slicing, so a
+-- corrupted or hostile string can only ever fail to parse (caught by pcall),
+-- never execute anything.
+--
+-- The serialized bytes are then base64-encoded purely so the result is a
+-- single line of safe, printable characters (macro bodies can contain raw
+-- newlines and arbitrary punctuation) that survives copy/paste anywhere,
+-- including the in-game edit box and external chat/forum text fields --
+-- exactly the same reason HealBot's own export strings are base64.
+-- ---------------------------------------------------------------------
+
+local SFA_B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+function SFA:B64Encode(data)
+  return ((data:gsub(".", function(x)
+    local r, b = "", x:byte()
+    for i = 8, 1, -1 do r = r .. (b % 2 ^ i - b % 2 ^ (i - 1) > 0 and "1" or "0") end
+    return r
+  end) .. "0000"):gsub("%d%d%d?%d?%d?%d?", function(x)
+    if #x < 6 then return "" end
+    local c = 0
+    for i = 1, 6 do c = c + (x:sub(i, i) == "1" and 2 ^ (6 - i) or 0) end
+    return SFA_B64_CHARS:sub(c + 1, c + 1)
+  end) .. ({ "", "==", "=" })[#data % 3 + 1])
+end
+
+function SFA:B64Decode(data)
+  data = string.gsub(data, "[^" .. SFA_B64_CHARS .. "=]", "")
+  return (data:gsub(".", function(x)
+    if x == "=" then return "" end
+    local r, f = "", (SFA_B64_CHARS:find(x, 1, true) - 1)
+    for i = 6, 1, -1 do r = r .. (f % 2 ^ i - f % 2 ^ (i - 1) > 0 and "1" or "0") end
+    return r
+  end):gsub("%d%d%d?%d?%d?%d?%d?%d?", function(x)
+    if #x ~= 8 then return "" end
+    local c = 0
+    for i = 1, 8 do c = c + (x:sub(i, i) == "1" and 2 ^ (8 - i) or 0) end
+    return string.char(c)
+  end))
+end
+
+-- Length-prefixed serializer. Only handles the shapes our SavedVariables
+-- actually use (strings, numbers, booleans, nested tables with string or
+-- number keys) -- a function/userdata value is skipped (written as "F")
+-- rather than erroring, since none of our exported data should ever contain
+-- one.
+local function SFA_SerializeValue(v, buf)
+  local t = type(v)
+  if t == "string" then
+    buf[#buf + 1] = "s" .. #v .. ":" .. v
+  elseif t == "number" then
+    local s = tostring(v)
+    buf[#buf + 1] = "n" .. #s .. ":" .. s
+  elseif t == "boolean" then
+    buf[#buf + 1] = v and "T" or "F"
+  elseif t == "table" then
+    local pairList = {}
+    for k, val in pairs(v) do
+      pairList[#pairList + 1] = { k, val }
+    end
+    buf[#buf + 1] = "t" .. #pairList .. ":"
+    for _, kv in ipairs(pairList) do
+      SFA_SerializeValue(kv[1], buf)
+      SFA_SerializeValue(kv[2], buf)
+    end
+  else
+    buf[#buf + 1] = "F"
+  end
+end
+
+function SFA:SerializeTable(tbl)
+  local buf = {}
+  SFA_SerializeValue(tbl, buf)
+  return table.concat(buf)
+end
+
+-- Reads a decimal count/length immediately followed by ":" starting at pos.
+-- Used both for a table's pair-count ("t<N>:") and a string/number's byte
+-- length ("s<N>:"/"n<N>:") -- same shape either way.
+local function SFA_ReadCount(str, pos)
+  local colonPos = str:find(":", pos, true)
+  if not colonPos then error("missing length separator at position " .. pos) end
+  local n = tonumber(str:sub(pos, colonPos - 1))
+  if not n then error("bad length/count at position " .. pos) end
+  return n, colonPos + 1
+end
+
+local SFA_DeserializeValue
+SFA_DeserializeValue = function(str, pos)
+  local tag = str:sub(pos, pos)
+  if tag == "T" then
+    return true, pos + 1
+  elseif tag == "F" then
+    return false, pos + 1
+  elseif tag == "s" or tag == "n" then
+    local len, bodyPos = SFA_ReadCount(str, pos + 1)
+    local bodyEnd = bodyPos + len - 1
+    if bodyEnd > #str then error("truncated value at position " .. pos) end
+    local raw = str:sub(bodyPos, bodyEnd)
+    if tag == "n" then
+      local num = tonumber(raw)
+      if not num then error("bad number at position " .. pos) end
+      return num, bodyEnd + 1
+    end
+    return raw, bodyEnd + 1
+  elseif tag == "t" then
+    local count, bodyPos = SFA_ReadCount(str, pos + 1)
+    local result = {}
+    local p = bodyPos
+    for _ = 1, count do
+      local k, v
+      k, p = SFA_DeserializeValue(str, p)
+      v, p = SFA_DeserializeValue(str, p)
+      result[k] = v
+    end
+    return result, p
+  else
+    error("unknown tag '" .. tostring(tag) .. "' at position " .. pos)
+  end
+end
+
+-- Returns (table, nil) on success, or (nil, errorMessage) on any malformed
+-- input -- including deliberately hostile input, since this never executes
+-- anything, it only ever slices the string and builds a plain table.
+function SFA:DeserializeTable(str)
+  local ok, result = pcall(function()
+    local value, endPos = SFA_DeserializeValue(str, 1)
+    if endPos ~= #str + 1 then
+      error("trailing data after position " .. endPos)
+    end
+    if type(value) ~= "table" then
+      error("top-level value is not a table")
+    end
+    return value
+  end)
+  if ok then return result end
+  return nil, result
+end
+
+local SFA_BACKUP_HEADER = "SFA1:"
+
+-- Real Blizzard macros (the ones listed by /macro, created/edited via
+-- CreateMacro/EditMacro/GetMacroInfo) are a completely separate system from
+-- SFA's own click-cast bindings below -- different API, different storage
+-- (global macros are account-wide, indices 1-120; character macros are
+-- indices 121-138, GetNumMacros()'s 2nd return tells you how many exist),
+-- nothing to do with SFA_DB/SFA_DB_Char at all. Added 2026-10-29 after a
+-- user import test: SFA's own click-cast macros round-tripped perfectly,
+-- but the player's real WoW macros (visible via /macro) weren't touched,
+-- because the original Backup/Restore only ever knew about click-cast
+-- bindings -- a scope gap from how "macro" was first interpreted, not a bug
+-- in the serializer. These two helpers collect/apply the real macro list as
+-- its own payload section ("rm"), kept separate from "m" (click-cast).
+function SFA:CollectAllMacros()
+  local numGlobal, numChar = GetNumMacros()
+  numGlobal = numGlobal or 0
+  numChar = numChar or 0
+  local globalList, charList = {}, {}
+  for i = 1, numGlobal do
+    local name, icon, body = GetMacroInfo(i)
+    if name then
+      globalList[#globalList + 1] = { n = name, i = icon or "INV_Misc_QuestionMark", b = body or "" }
+    end
+  end
+  for i = 1, numChar do
+    local name, icon, body = GetMacroInfo(120 + i)
+    if name then
+      charList[#charList + 1] = { n = name, i = icon or "INV_Misc_QuestionMark", b = body or "" }
+    end
+  end
+  return globalList, charList
+end
+
+-- Writes a collected macro list back via CreateMacro/EditMacro. A macro
+-- whose name already exists in the same scope (global vs character) is
+-- overwritten in place (icon + body); a new name is created in a free slot.
+-- Returns (appliedCount, skippedCount) -- skipped means the 120-global or
+-- 18-character slot limit was hit and a new macro couldn't be created.
+function SFA:ApplyMacroList(list, isLocal)
+  if type(list) ~= "table" then return 0, 0 end
+  local applied, skipped = 0, 0
+  for _, m in ipairs(list) do
+    if type(m) == "table" and type(m.n) == "string" and m.n ~= "" then
+      local numGlobal, numChar = GetNumMacros()
+      numGlobal = numGlobal or 0
+      numChar = numChar or 0
+      local existingIdx = nil
+      if isLocal then
+        for i = 1, numChar do
+          if GetMacroInfo(120 + i) == m.n then existingIdx = 120 + i break end
+        end
+      else
+        for i = 1, numGlobal do
+          if GetMacroInfo(i) == m.n then existingIdx = i break end
+        end
+      end
+      local icon = m.i or "INV_Misc_QuestionMark"
+      local body = m.b or ""
+      if existingIdx then
+        local ok = pcall(EditMacro, existingIdx, m.n, icon, body)
+        if ok then applied = applied + 1 else skipped = skipped + 1 end
+      else
+        local limit = isLocal and 18 or 120
+        local count = isLocal and numChar or numGlobal
+        if count >= limit then
+          skipped = skipped + 1
+        else
+          local ok, newIdx = pcall(CreateMacro, m.n, icon, body, isLocal)
+          if ok and newIdx then applied = applied + 1 else skipped = skipped + 1 end
+        end
+      end
+    end
+  end
+  return applied, skipped
+end
+
+-- Builds the exportable string. includeMacros pulls the per-character,
+-- per-spec click-cast bindings (SFA_DB_Char); includeSettings pulls the
+-- account-wide SFA_DB.minimap + SFA_DB.other (Smart Assist, cursor ring,
+-- auto-sell junk, modifier bypass, proc ready alerts, etc.); includeRealMacros
+-- pulls the player's actual WoW macros (global + character, see
+-- CollectAllMacros above). Any combination, or none, can be selected.
+function SFA:BuildBackupString(includeMacros, includeSettings, includeRealMacros)
+  local payload = {}
+  if includeMacros and self.charDB then
+    payload.m = {
+      clicks = self.charDB.clicks,
+      clicksBySpec = self.charDB.clicksBySpec,
+      friendlyEnabled = self.charDB.friendlyEnabled,
+      enemyEnabled = self.charDB.enemyEnabled,
+    }
+  end
+  if includeSettings and self.db then
+    payload.s = {
+      minimap = self.db.minimap,
+      other = self.db.other,
+    }
+  end
+  if includeRealMacros then
+    local okRm, globalList, charList = pcall(function() return self:CollectAllMacros() end)
+    if okRm then
+      payload.rm = { global = globalList, char = charList }
+    end
+  end
+  if not payload.m and not payload.s and not payload.rm then
+    return nil, "Nothing selected to export."
+  end
+
+  local ok, serialized = pcall(function() return self:SerializeTable(payload) end)
+  if not ok then
+    return nil, "Couldn't build the export (" .. tostring(serialized) .. ")."
+  end
+  local okEnc, encoded = pcall(function() return self:B64Encode(serialized) end)
+  if not okEnc then
+    return nil, "Couldn't encode the export (" .. tostring(encoded) .. ")."
+  end
+  return SFA_BACKUP_HEADER .. encoded
+end
+
+-- Applies a pasted backup string. Only overwrites the parts actually
+-- present in the string (a macros-only export never touches settings, and
+-- vice versa). Returns (true, summaryMessage) or (false, errorMessage).
+function SFA:ApplyBackupString(str)
+  str = (str or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if str == "" then
+    return false, "Paste a backup string first."
+  end
+  if str:sub(1, #SFA_BACKUP_HEADER) ~= SFA_BACKUP_HEADER then
+    return false, "This doesn't look like an SFA backup string."
+  end
+
+  local b64 = str:sub(#SFA_BACKUP_HEADER + 1)
+  local okDecode, raw = pcall(function() return self:B64Decode(b64) end)
+  if not okDecode or not raw or raw == "" then
+    return false, "Couldn't decode this string -- it may be corrupted or incomplete."
+  end
+
+  local payload, err = self:DeserializeTable(raw)
+  if not payload then
+    return false, "Couldn't read this backup (" .. tostring(err) .. ")."
+  end
+
+  local parts = {}
+  if type(payload.m) == "table" then
+    self.charDB = self.charDB or SFA_DB_Char
+    if self.charDB then
+      if payload.m.clicks ~= nil then self.charDB.clicks = payload.m.clicks end
+      if payload.m.clicksBySpec ~= nil then self.charDB.clicksBySpec = payload.m.clicksBySpec end
+      if payload.m.friendlyEnabled ~= nil then self.charDB.friendlyEnabled = payload.m.friendlyEnabled end
+      if payload.m.enemyEnabled ~= nil then self.charDB.enemyEnabled = payload.m.enemyEnabled end
+      parts[#parts + 1] = "macros"
+    end
+  end
+  if type(payload.s) == "table" then
+    self.db = self.db or SFA_DB
+    if self.db then
+      if type(payload.s.minimap) == "table" then self.db.minimap = payload.s.minimap end
+      if type(payload.s.other) == "table" then self.db.other = payload.s.other end
+      parts[#parts + 1] = "settings"
+    end
+  end
+  if type(payload.rm) == "table" then
+    if InCombatLockdown() then
+      parts[#parts + 1] = "real macros skipped (can't edit macros in combat -- try again out of combat)"
+    else
+      local gApplied, gSkipped = self:ApplyMacroList(payload.rm.global, false)
+      local cApplied, cSkipped = self:ApplyMacroList(payload.rm.char, true)
+      local totalApplied = gApplied + cApplied
+      local totalSkipped = gSkipped + cSkipped
+      if totalApplied > 0 or totalSkipped > 0 then
+        local label = "WoW macros: " .. totalApplied .. " applied"
+        if totalSkipped > 0 then label = label .. ", " .. totalSkipped .. " skipped (slot limit)" end
+        parts[#parts + 1] = label
+      end
+    end
+  end
+
+  if #parts == 0 then
+    return false, "This backup string doesn't contain macros or settings."
+  end
+
+  -- Best-effort UI/visual refresh so the change is visible immediately
+  -- without needing /reload -- any one of these failing shouldn't stop the
+  -- import from having already succeeded, hence the pcall per call.
+  --
+  -- Importing macros writes straight into self.charDB.clicks /
+  -- clicksBySpec, bypassing SetClickMacro -- which every other place that
+  -- changes a click macro (the macro edit boxes, the per-group disable
+  -- checkbox, the modifier-bypass checkboxes) always follows with
+  -- ApplyAllNativeClickBindings() to actually push the new macro text onto
+  -- Blizzard's native click-cast frames. Without calling it here too, the
+  -- saved data is correct but the live frames keep firing the OLD macros
+  -- until the next /reload -- confirmed 2026-10-29: user imported a backup
+  -- string, the data decoded perfectly, but nothing changed in-game because
+  -- this call was missing.
+  if type(payload.m) == "table" then
+    pcall(function() if self.ApplyAllNativeClickBindings then self:ApplyAllNativeClickBindings() end end)
+  end
+  if type(payload.rm) == "table" then
+    -- Refresh SFA's own Macro Manager window (MacroOrganizer.lua) if it's
+    -- currently open, so newly imported/overwritten real macros show up
+    -- immediately instead of looking stale until the window is reopened.
+    pcall(function()
+      if self.cmf and self.cmf.window and self.cmf.window:IsShown() and self.CMF_BuildCache then
+        self:CMF_BuildCache()
+        if self.CMF_RefreshGrid then self:CMF_RefreshGrid() end
+      end
+    end)
+  end
+  pcall(function() if self.RefreshOptionsPanel then self:RefreshOptionsPanel() end end)
+  pcall(function() if self.RefreshQuestIndicators then self:RefreshQuestIndicators() end end)
+  pcall(function() if self.ApplyCursorRingSettings then self:ApplyCursorRingSettings() end end)
+  pcall(function() if self.UpdateMinimapButtonPosition then self:UpdateMinimapButtonPosition() end end)
+
+  local msg = "Imported: " .. table.concat(parts, ", ") .. "."
+  if payload.s then
+    msg = msg .. " Double-check Proc Ready Alerts' spell list if you imported settings across game versions -- spell IDs aren't always the same on every client."
+  end
+  return true, msg
+end
+
 function SFA:IsValidQuestIndicatorMob(unit)
   if not unit or not UnitExists(unit) then
     return false
@@ -183,10 +557,23 @@ function SFA:HasQuestObjectiveTooltip(unit)
     end
   end
 
-  -- Do NOT fall back to GameTooltip:SetUnit here. In PvP/arena and some
-  -- protected UI paths, SetUnit can taint Blizzard tooltip data and throw
-  -- secret-value errors from GameTooltip:SetWatch. C_TooltipInfo is the safe
-  -- path; if it does not provide usable objective lines, fail closed.
+  -- 0.26.10/0.26.11/0.26.12/0.26.13 attempted several Classic-Era-only
+  -- fallbacks here (a clone-tooltip scan, then a real-GameTooltip scan keyed
+  -- off whatever quest-helper addon like Questie injects into it). All of
+  -- that was rolled back by user request on 2026-10-25: Questie's own
+  -- in-game marker already covers this on Classic Era, Questie's data comes
+  -- from its own manually-curated database rather than a real Blizzard quest
+  -- API, and the user didn't want SFA piggybacking on another addon's
+  -- tooltip text for this. Back to the simple, addon-API-only behavior: no
+  -- indicator on a client without C_QuestLog.UnitIsRelatedToActiveQuest (or
+  -- C_TooltipInfo-derived objective lines) -- revisit only if Blizzard adds
+  -- a real quest-relation API to Classic Era.
+
+  -- Do NOT fall back to GameTooltip:SetUnit on Retail/Midnight. In PvP/arena
+  -- and some protected UI paths there, SetUnit can taint Blizzard tooltip
+  -- data and throw secret-value errors from GameTooltip:SetWatch.
+  -- C_TooltipInfo is the safe path on that client; if it does not provide
+  -- usable objective lines, fail closed.
   return false
 end
 

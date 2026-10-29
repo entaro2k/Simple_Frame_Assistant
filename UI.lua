@@ -1780,6 +1780,173 @@ friendlyContent:SetHeight(498)
 local enemySection = self:BuildGroupSection(enemyContent, "enemy", 24, -68)
 enemyContent:SetHeight(498)
 
+-- ---------------------------------------------------------------------
+-- 0.26.15, user-requested: Backup/Restore -- export macros and/or SFA
+-- settings as one copy-pasteable string (same idea as HealBot's own
+-- import/export strings), to carry them to another character, realm, or
+-- client flavor by hand. All the actual encode/decode/apply logic lives in
+-- Core.lua (SFA:BuildBackupString / SFA:ApplyBackupString) -- this is just
+-- the panel wiring it up to 2 checkboxes, an Export button + output box,
+-- and a paste box + Import button.
+-- ---------------------------------------------------------------------
+local backupPanel = CreateCanvasFrame(addonName .. "OptionsBackup")
+backupPanel.OnRefresh = function() C_Timer.After(0, function() if SFA and SFA.RefreshOptionsPanel then SFA:RefreshOptionsPanel() end end) end
+local backupContent = backupPanel.content
+local backupTitle = backupContent:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+backupTitle:SetPoint("TOPLEFT", 18, -10)
+backupTitle:SetText("Simple Frame Assistant")
+local backupSub = backupContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+backupSub:SetPoint("TOPLEFT", backupTitle, "BOTTOMLEFT", 0, -6)
+backupSub:SetText("Backup/Restore")
+
+local backupDesc = backupContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+backupDesc:SetPoint("TOPLEFT", backupSub, "BOTTOMLEFT", 0, -10)
+backupDesc:SetWidth(780)
+backupDesc:SetJustifyH("LEFT")
+backupDesc:SetText("Export your click macros, SFA settings, and/or your real WoW macros (/macro) as one text string you can copy and paste into another character, realm, or WoW client (e.g. Retail -> Classic Era). Nothing here is sent anywhere -- it's just a copy/paste string, like HealBot's.")
+
+local backupExportHeader = CreateSectionHeader(backupContent, "Export", 18, -92)
+
+-- CreateCheckbox always calls onClick(checked) on every click (see its
+-- definition above) -- these don't persist anything themselves (just
+-- read via :GetChecked() when Export is clicked below), but passing nil
+-- here would crash the instant the player toggled either box ("attempt to
+-- call a nil value"), so a no-op function is required, not nil.
+local backupExportMacros = CreateCheckbox(backupContent, "Include macros (this character's click-cast bindings, per spec)", 24, -128, true, function() end)
+local backupExportSettings = CreateCheckbox(backupContent, "Include SFA settings (Smart Assist, cursor ring, auto-sell junk, etc.)", 24, -158, true, function() end)
+-- 2026-10-29, user-reported: "macros" above only ever meant SFA's own
+-- click-cast bindings, not the player's actual WoW macros (the ones listed
+-- by /macro) -- those are a completely separate Blizzard system
+-- (GetNumMacros/GetMacroInfo/CreateMacro/EditMacro) that the original
+-- Backup/Restore never touched, so a round-trip looked like it "did
+-- nothing" even though the SFA data imported perfectly. This is its own
+-- checkbox, off by default, since overwriting real macros by name is a more
+-- consequential action than updating SFA's own settings.
+local backupExportRealMacros = CreateCheckbox(backupContent, "Include my WoW macros (/macro -- global + character, overwrites same-named macros on import)", 24, -188, false, function() end)
+
+-- Declared here (before the Export/Import buttons below, which both
+-- reference it as a closure upvalue) rather than after them -- a `local`
+-- declared AFTER the functions that use it would make Lua resolve those
+-- references as a nil GLOBAL instead of this local, the exact same bug
+-- class fixed in 0.26.9 for the Debug panel's own forward-declared local.
+local backupStatusLabel = backupContent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+backupStatusLabel:SetPoint("TOPLEFT", 24, -285)
+backupStatusLabel:SetWidth(780)
+backupStatusLabel:SetJustifyH("LEFT")
+backupStatusLabel:SetText("")
+
+local backupExportOutLabel = CreateLabel(backupContent, "Already selected -- press Ctrl+C to copy:", 24, -320)
+
+local backupExportBG = CreateFrame("Frame", nil, backupContent, "BackdropTemplate")
+backupExportBG:SetPoint("TOPLEFT", 24, -340)
+backupExportBG:SetSize(780, 90)
+if backupExportBG.SetBackdrop then
+  backupExportBG:SetBackdrop({
+    bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+    edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+    tile = true, tileSize = 8, edgeSize = 8,
+    insets = { left = 2, right = 2, top = 2, bottom = 2 },
+  })
+  backupExportBG:SetBackdropColor(0.02, 0.02, 0.04, 0.95)
+  backupExportBG:SetBackdropBorderColor(0.25, 0.25, 0.35, 0.8)
+end
+local backupExportScroll = CreateFrame("ScrollFrame", nil, backupExportBG, "UIPanelScrollFrameTemplate")
+backupExportScroll:SetPoint("TOPLEFT", 4, -4)
+backupExportScroll:SetPoint("BOTTOMRIGHT", -26, 4)
+local backupExportEdit = CreateFrame("EditBox", nil, backupExportScroll)
+backupExportEdit:SetMultiLine(true)
+backupExportEdit:SetAutoFocus(false)
+backupExportEdit:SetFontObject("GameFontHighlightSmall")
+backupExportEdit:SetWidth(750)
+backupExportEdit:SetHeight(90)
+backupExportEdit:SetMaxLetters(0)
+backupExportEdit:SetTextInsets(4, 4, 4, 4)
+backupExportEdit:SetScript("OnEscapePressed", function(selfBox) selfBox:ClearFocus() end)
+backupExportScroll:SetScrollChild(backupExportEdit)
+
+-- 0.26.19, user-requested: Export/Import used to sit far apart (Import's
+-- button was below its own paste box, near the very bottom of a tall
+-- scrolling panel) and the Import button in particular was easy to miss
+-- without scrolling all the way down. Both action buttons now live together
+-- right after the checkboxes, with backupStatusLabel right under them so
+-- the result of whichever one you clicked is immediately visible too. The
+-- paste/output boxes stay below for anyone who wants to actually look at
+-- the text; neither button needs its box in view to work (Export
+-- auto-selects its own output, Import's box is auto-focused on OnShow), so
+-- moving the buttons up doesn't break the Ctrl+C/Ctrl+V flow.
+local backupExportBtn = CreateButton(backupContent, "Export", 24, -220, 120, 24, function()
+  if not SFA.BuildBackupString then return end
+  local str, err = SFA:BuildBackupString(backupExportMacros:GetChecked(), backupExportSettings:GetChecked(), backupExportRealMacros:GetChecked())
+  if not str then
+    backupExportEdit:SetText("")
+    backupStatusLabel:SetTextColor(1, 0.4, 0.4)
+    backupStatusLabel:SetText(err or "Nothing to export.")
+    return
+  end
+  backupExportEdit:SetText(str)
+  backupExportEdit:HighlightText()
+  backupExportEdit:SetFocus()
+  backupStatusLabel:SetTextColor(0.6, 1, 0.6)
+  backupStatusLabel:SetText("Exported -- text is selected, press Ctrl+C to copy.")
+end)
+
+local backupImportHeader = CreateSectionHeader(backupContent, "Import", 18, -440)
+local backupImportInLabel = CreateLabel(backupContent, "Click here and press Ctrl+V to paste (the Import button is up top, next to Export):", 24, -470)
+
+local backupImportBG = CreateFrame("Frame", nil, backupContent, "BackdropTemplate")
+backupImportBG:SetPoint("TOPLEFT", 24, -490)
+backupImportBG:SetSize(780, 90)
+if backupImportBG.SetBackdrop then
+  backupImportBG:SetBackdrop({
+    bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+    edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+    tile = true, tileSize = 8, edgeSize = 8,
+    insets = { left = 2, right = 2, top = 2, bottom = 2 },
+  })
+  backupImportBG:SetBackdropColor(0.02, 0.02, 0.04, 0.95)
+  backupImportBG:SetBackdropBorderColor(0.25, 0.25, 0.35, 0.8)
+end
+local backupImportScroll = CreateFrame("ScrollFrame", nil, backupImportBG, "UIPanelScrollFrameTemplate")
+backupImportScroll:SetPoint("TOPLEFT", 4, -4)
+backupImportScroll:SetPoint("BOTTOMRIGHT", -26, 4)
+local backupImportEdit = CreateFrame("EditBox", nil, backupImportScroll)
+backupImportEdit:SetMultiLine(true)
+backupImportEdit:SetAutoFocus(false)
+backupImportEdit:SetFontObject("GameFontHighlightSmall")
+backupImportEdit:SetWidth(750)
+backupImportEdit:SetHeight(90)
+backupImportEdit:SetMaxLetters(0)
+backupImportEdit:SetTextInsets(4, 4, 4, 4)
+backupImportEdit:SetScript("OnEscapePressed", function(selfBox) selfBox:ClearFocus() end)
+backupImportScroll:SetScrollChild(backupImportEdit)
+
+local backupImportBtn = CreateButton(backupContent, "Import", 24, -250, 120, 24, function()
+  if not SFA.ApplyBackupString then return end
+  local ok, msg = SFA:ApplyBackupString(backupImportEdit:GetText())
+  if ok then
+    backupStatusLabel:SetTextColor(0.6, 1, 0.6)
+    backupStatusLabel:SetText(msg)
+    backupImportEdit:SetText("")
+    backupImportEdit:ClearFocus()
+  else
+    backupStatusLabel:SetTextColor(1, 0.4, 0.4)
+    backupStatusLabel:SetText(msg or "Import failed.")
+  end
+end)
+
+-- 0.26.16, user-requested: no addon has OS-clipboard access in WoW (neither
+-- read nor write -- confirmed, this isn't an oversight, Blizzard doesn't
+-- expose it), so an actual "Copy"/"Paste" button isn't possible; Ctrl+C on
+-- already-selected text (the Export button does this) and Ctrl+V on a
+-- focused EditBox (native client behavior, not addon code) are the only
+-- real mechanisms. This auto-focuses the Import box every time the panel is
+-- opened, so pasting is just Ctrl+V with no click needed first.
+backupPanel:HookScript("OnShow", function()
+  backupImportEdit:SetFocus()
+end)
+
+backupContent:SetHeight(620)
+
 if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOnCategory and Settings.RegisterCanvasLayoutSubcategory then
     local category = Settings.RegisterCanvasLayoutCategory(root, "Simple Frame Assistant")
     Settings.RegisterAddOnCategory(category)
@@ -1790,6 +1957,7 @@ if Settings and Settings.RegisterCanvasLayoutCategory and Settings.RegisterAddOn
     Settings.RegisterCanvasLayoutSubcategory(category, friendlyPanel, "Friendly Frame")
     Settings.RegisterCanvasLayoutSubcategory(category, enemyPanel, "Enemy Frame")
     Settings.RegisterCanvasLayoutSubcategory(category, otherPanel, "Smart Assist")
+    Settings.RegisterCanvasLayoutSubcategory(category, backupPanel, "Backup/Restore")
     -- 0.26.7, user-requested: Debug is deliberately NOT registered as a
     -- Settings subcategory anymore, so it no longer shows up in the
     -- Options menu list. It's still fully functional -- see the
