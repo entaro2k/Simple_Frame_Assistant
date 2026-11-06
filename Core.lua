@@ -1220,11 +1220,27 @@ local function SFA_InjectDisposition(inner, forceDisposition)
   return inner .. "," .. forceDisposition
 end
 
--- Processes a single ";"-separated segment of a cast/use command,
--- injecting @<unit> into any conditional that lacks a target,
+-- Processes a single ";"-separated segment of a cast/use/startattack
+-- command, injecting @<unit> into any conditional that lacks a target,
 -- or prepending [@<unit>] when the segment has a spell but no conditional.
 -- forceDisposition (optional, "help"/"harm"): see SFA_InjectDisposition.
-local function SFA_ProcessSegment(seg, unit, forceDisposition)
+-- injectEvenIfBlank (optional, 0.26.21): /startattack (and similar
+-- argument-less commands) have no "spell name" after the command, so the
+-- old "only inject if there's an actual spell" guard below used to let a
+-- bare "/startattack" line pass straight through UNCONDITIONALLY even
+-- when forceDisposition is set -- confirmed live (2026-11-06) as the root
+-- cause of the "target switches to target-of-target" bug: a user's
+-- enemy-only click macro of "/startattack\n/cast Moonfire" gets combined
+-- onto the SAME button as the friendly macro by SFA_BuildReactiveDesired;
+-- "/cast Moonfire" correctly gets forced to [@target,harm] and no-ops on
+-- a friendly target, but the bare "/startattack" had no condition at all,
+-- so it ran against the ACTUAL (friendly, unattackable) target every
+-- time -- and this client's /startattack, when its target can't be
+-- attacked, falls back to auto-selecting a nearby enemy (often the
+-- friendly unit's own attacker, i.e. that unit's target-of-target),
+-- which is the "switch" the user was seeing. Pass true here only for
+-- commands that are meaningful with zero arguments.
+local function SFA_ProcessSegment(seg, unit, forceDisposition, injectEvenIfBlank)
   local leadWs = seg:match("^(%s*)") or ""
   local body = seg:sub(#leadWs + 1)
 
@@ -1244,6 +1260,11 @@ local function SFA_ProcessSegment(seg, unit, forceDisposition)
       local inner = "@" .. unit
       if forceDisposition then inner = inner .. "," .. forceDisposition end
       return leadWs .. "[" .. inner .. "]" .. spell
+    elseif injectEvenIfBlank and forceDisposition and not spell:match("%S") then
+      -- Bare command (e.g. "/startattack" with nothing after it) and no
+      -- existing conditional -- still gate it, otherwise it runs
+      -- unconditionally against the live target regardless of disposition.
+      return leadWs .. "[@" .. unit .. "," .. forceDisposition .. "]"
     end
     return seg
   end
@@ -1287,11 +1308,18 @@ local function SFA_ResolveMacroForUnit(macroText, unit, forceDisposition)
     local lower = line:lower()
     local isCastSpell = lower:find("^%s*/cast") or lower:find("^%s*/use")
     local isTargetLike = lower:find("^%s*/target") or lower:find("^%s*/focus")
-    if cmd and (isCastSpell or isTargetLike) then
-      local segForce = isCastSpell and forceDisposition or nil
+    -- 0.26.21: /startattack (and /petattack) have no spell name and used
+    -- to fall straight through to outLines unchanged, ignoring
+    -- forceDisposition entirely -- see SFA_ProcessSegment's comment for
+    -- the confirmed-live bug this caused. Gate them the same way /cast
+    -- and /use are gated, with injectEvenIfBlank so a bare
+    -- "/startattack" (no existing [..] conditional) still gets forced.
+    local isAttackCmd = lower:find("^%s*/startattack") or lower:find("^%s*/petattack")
+    if cmd and (isCastSpell or isTargetLike or isAttackCmd) then
+      local segForce = (isCastSpell or isAttackCmd) and forceDisposition or nil
       local segments = {}
       for seg in (rest .. ";"):gmatch("(.-);") do
-        segments[#segments + 1] = SFA_ProcessSegment(seg, unit, segForce)
+        segments[#segments + 1] = SFA_ProcessSegment(seg, unit, segForce, isAttackCmd)
       end
       outLines[#outLines + 1] = cmd .. table.concat(segments, ";")
     else
@@ -2074,13 +2102,37 @@ local function SFA_TryOpenUnitMenuLegacy(self, unit, refKey)
   -- FocusFrame specifically (see comment on SFA_ResolveFrameMenuTagHints).
   local whichCandidates = {}
   local seen = {}
-  for _, suffix in ipairs(SFA_ResolveFrameMenuTagHints(refKey)) do
-    if not seen[suffix] then seen[suffix] = true; whichCandidates[#whichCandidates + 1] = suffix end
-  end
-  local tagCandidates = SFA_ResolveMenuTagCandidates(unit)
-  for _, tag in ipairs(tagCandidates) do
-    local suffix = tag:match("^MENU_UNIT_(.+)$")
+  local function addSuffix(suffix)
     if suffix and not seen[suffix] then seen[suffix] = true; whichCandidates[#whichCandidates + 1] = suffix end
+  end
+
+  local frameHints = SFA_ResolveFrameMenuTagHints(refKey)
+  local tagCandidates = SFA_ResolveMenuTagCandidates(unit)
+
+  -- 0.26.23: live-tested (2026-11-06, screenshots) that for an actual
+  -- PLAYER unit, the frame-identity hint ("TARGET"/"FOCUS") "succeeds"
+  -- (UnitPopup_OpenMenu doesn't error) but opens Blizzard's REDUCED
+  -- target/focus-frame dropdown -- Target Marker Icon / Set Focus / Add
+  -- Friend only, no "Interact" section at all (no Whisper/Invite/Inspect/
+  -- View Talents/Trade/Duel), vs. the full menu a plain right-click shows.
+  -- Since "ok=true" only means no Lua error, not "this is the menu we
+  -- wanted", the loop below used to stop at "TARGET" before ever trying
+  -- "PLAYER"/"ENEMY_PLAYER" -- happened identically for friendly AND
+  -- hostile targets (user confirmed both). For a real player, try the
+  -- relationship-based candidates (which open the full menu) FIRST, with
+  -- the frame-identity hint only as a fallback if those somehow fail.
+  -- For a non-player unit (NPC), KEEP the frame-identity hint first --
+  -- that ordering was itself a deliberate, live-tested fix (0.25.18, see
+  -- SFA_ResolveFrameMenuTagHints' comment): MENU_UNIT_UNIT opens but is
+  -- empty for a friendly NPC, so relationship-based guessing must stay a
+  -- fallback, not the first try, for units that aren't players at all.
+  local okIsPlayer, isPlayer = pcall(UnitIsPlayer, unit)
+  if okIsPlayer and isPlayer then
+    for _, tag in ipairs(tagCandidates) do addSuffix(tag:match("^MENU_UNIT_(.+)$")) end
+    for _, suffix in ipairs(frameHints) do addSuffix(suffix) end
+  else
+    for _, suffix in ipairs(frameHints) do addSuffix(suffix) end
+    for _, tag in ipairs(tagCandidates) do addSuffix(tag:match("^MENU_UNIT_(.+)$")) end
   end
   for _, tag in ipairs(tagCandidates) do
     if not seen[tag] then seen[tag] = true; whichCandidates[#whichCandidates + 1] = tag end
@@ -2104,6 +2156,60 @@ local function SFA_TryOpenUnitMenuLegacy(self, unit, refKey)
 end
 
 local function SFA_OnManagedFrameClick(self, frame, refKey, button)
+  -- 2026-11-06, user-reported (WoW Forever): clicking TargetFrame with an
+  -- ally/enemy targeted who itself has a target fires the correct
+  -- click-cast spell, but the player's actual target then switches to that
+  -- unit's target (target-of-target) -- confirmed by the user NOT to
+  -- happen with both click-cast groups disabled (plain native click), so
+  -- this is something about how this addon's click-cast interacts with the
+  -- frame, not an unrelated client quirk. Root cause not yet found by
+  -- static code review (the generated macrotext never references anything
+  -- but the literal "target"/"focus" unit token, and the secure driver
+  -- snippet never touches the "unit" attribute) -- this unconditional,
+  -- debug-gated logging (every click, every button, not just RightButton)
+  -- is here to capture the ACTUAL target identity right before the click
+  -- and shortly after, from a live repro, since nothing in the macro
+  -- construction itself looked wrong on inspection.
+  if self.auraDebug then
+    local function snap() return (UnitName("target") or "<none>"), (UnitGUID("target") or "<none>") end
+    local beforeName, beforeGUID = snap()
+    self:Log("native-click click-fired frame=%s button=%s target-before=%s guid-before=%s",
+      tostring(refKey), tostring(button), beforeName, beforeGUID)
+    -- 0.26.21: live-read whatever is ACTUALLY on the frame's secure
+    -- attributes at the moment OnClick fires (after native dispatch has
+    -- already run), instead of trusting the "desired" values logged at
+    -- apply-time -- rules out something else (Blizzard's own frame
+    -- refresh, another addon) having overwritten them between apply and
+    -- click. Also dumps "unit" (SFA never sets it, but something else
+    -- might) and totSame (whether targettarget right now matches the
+    -- CURRENT target -- if true, confirms a plain TargetUnit(targettarget)
+    -- is a live explanation for whatever target ends up selected).
+    pcall(function()
+      local function attr(key)
+        local okA, v = pcall(frame.GetAttribute, frame, key)
+        return okA and SFA_DescribeValue(v) or "<err>"
+      end
+      self:Log("native-click click-fired live-attrs frame=%s unit=%s type1=%s type2=%s macrotext1=%s macrotext2=%s",
+        tostring(refKey), attr("unit"), attr("type1"), attr("type2"), attr("macrotext1"), attr("macrotext2"))
+      local totName = UnitName("targettarget") or "<none>"
+      local totGuid = UnitGUID("targettarget") or "<none>"
+      self:Log("native-click click-fired tot-snapshot frame=%s tot-name=%s tot-guid=%s target-equals-tot=%s",
+        tostring(refKey), totName, totGuid, tostring(beforeGUID ~= "<none>" and beforeGUID == totGuid))
+    end)
+    if C_Timer and C_Timer.After then
+      C_Timer.After(0, function()
+        local n, g = snap()
+        SFA:Log("native-click click-fired+0s frame=%s button=%s target=%s guid=%s",
+          tostring(refKey), tostring(button), n, g)
+      end)
+      C_Timer.After(0.3, function()
+        local n, g = snap()
+        SFA:Log("native-click click-fired+0.3s frame=%s button=%s target=%s guid=%s",
+          tostring(refKey), tostring(button), n, g)
+      end)
+    end
+  end
+
   -- 0.25.39 briefly added a LeftButton branch here that called TargetUnit()
   -- directly from this hook. 0.25.40 REMOVED it: that direct call turned
   -- out to be a forbidden action for addon code (Blizzard popped a "blocked
@@ -2262,6 +2368,31 @@ local function SFA_EnsureClickHook(self, frame, refKey)
     self:Log("native-click ctrlalt-menu hook-failed frame=%s err=%s",
       refKey, SFA_DescribeValue(hookErr))
   end
+
+  -- 0.26.21 diagnostic: PreClick fires BEFORE the secure "type"/"macrotext"
+  -- attribute dispatch resolves and runs (OnClick, hooked above, only
+  -- fires AFTER that native dispatch already executed). The live repro
+  -- logs captured so far show target-before already equal to the
+  -- post-switch unit even at the EARLIEST point OnClick could log it --
+  -- this PreClick snapshot is here to establish whether the retarget has
+  -- *already* happened even before the secure click dispatch runs (which
+  -- would rule out the macro body / secure driver entirely and point at
+  -- something in the raw click/mouse-down handling instead), or whether
+  -- it happens in between PreClick and OnClick (which would point back at
+  -- the secure dispatch itself).
+  local okPre, preErr = pcall(frame.HookScript, frame, "PreClick", function(_, button)
+    if self.auraDebug then
+      local n = UnitName("target") or "<none>"
+      local g = UnitGUID("target") or "<none>"
+      self:Log("native-click preclick frame=%s button=%s target=%s guid=%s",
+        tostring(refKey), tostring(button), n, g)
+    end
+  end)
+  if not okPre then
+    self:Log("native-click preclick-hook-failed frame=%s err=%s",
+      refKey, SFA_DescribeValue(preErr))
+  end
+
   frame.sfaClickHookRegistered = true
 end
 
@@ -3200,6 +3331,19 @@ local function SFA_ApplyNativeReactiveClickBindings(self, frameName)
   end
 
   local desired = SFA_BuildReactiveDesired(self, unit)
+  -- 2026-11-06 diagnostic (see SFA_OnManagedFrameClick's matching note):
+  -- dump the EXACT resolved macro text this combined button gets, once per
+  -- apply (login/settings-change, not per click -- that's the whole point
+  -- of the reactive redesign), so a live repro's debug log shows precisely
+  -- what WoW itself was handed, not just what the code is assumed to build.
+  if self.auraDebug then
+    self:Log("native-click reactive-apply frame=%s unit=%s type1=%s macrotext1=%s",
+      frameName, tostring(unit), SFA_DescribeValue(desired.type1), SFA_DescribeValue(desired.macrotext1))
+    self:Log("native-click reactive-apply frame=%s unit=%s type2=%s macrotext2=%s",
+      frameName, tostring(unit), SFA_DescribeValue(desired.type2), SFA_DescribeValue(desired.macrotext2))
+    self:Log("native-click reactive-apply frame=%s unit=%s type3=%s macrotext3=%s",
+      frameName, tostring(unit), SFA_DescribeValue(desired.type3), SFA_DescribeValue(desired.macrotext3))
+  end
   SFA_ApplyNativeClickDriver(frame, desired)
 end
 
