@@ -1240,7 +1240,7 @@ end
 -- friendly unit's own attacker, i.e. that unit's target-of-target),
 -- which is the "switch" the user was seeing. Pass true here only for
 -- commands that are meaningful with zero arguments.
-local function SFA_ProcessSegment(seg, unit, forceDisposition, injectEvenIfBlank)
+local function SFA_ProcessSegment(seg, unit, forceDisposition, bareDisposition)
   local leadWs = seg:match("^(%s*)") or ""
   local body = seg:sub(#leadWs + 1)
 
@@ -1254,17 +1254,52 @@ local function SFA_ProcessSegment(seg, unit, forceDisposition, injectEvenIfBlank
   end
   local spell = body
 
+  -- 0.26.24: /startattack and /petattack have NO unit-targeting dimension
+  -- at all -- they always act on the player's ACTUAL current target (or
+  -- current pet target), never on whichever frame/unit was clicked. Live
+  -- testing of 0.26.22's "[@unit,harm]" injection (confirmed by the user,
+  -- 2026-11-07) showed /startattack no longer fires AT ALL, on any
+  -- target -- the fix did stop the retarget bug, but as a side effect of
+  -- silently no-op'ing the whole line, not of correctly gating it. Most
+  -- likely cause: a command token immediately followed by "[" with no
+  -- separating space ("/startattack[@target,harm]") isn't accepted the
+  -- same way "/cast[...]Spell" is -- /cast's conditional-prefix handling
+  -- is special-cased in the macro engine for its own command family, and
+  -- nothing here confirms /startattack shares that exact grammar. Beyond
+  -- the syntax risk, "[@focus,harm]" was also semantically wrong on a
+  -- Focus-frame click: /startattack would still only ever attack the
+  -- REAL target, so gating it on the FOCUS's disposition could fire it
+  -- against a friendly real target whenever focus happened to be hostile
+  -- (or vice-versa suppress it when focus was friendly but the real
+  -- target was not). Fixed by dropping the "@unit" binding entirely for
+  -- these commands and using the bare, unit-less "[harm]"/"[help]" form
+  -- instead -- the oldest, most universally-supported macro conditional,
+  -- and the one that actually matches what the command acts on (the
+  -- player's real target) regardless of which frame was clicked. The
+  -- caller also now guarantees a space before the injected bracket (see
+  -- SFA_ResolveMacroForUnit) so the command token is never glued directly
+  -- to "[".
+  if bareDisposition then
+    if #conds == 0 then
+      if forceDisposition then
+        return leadWs .. "[" .. forceDisposition .. "]" .. spell
+      end
+      return seg
+    end
+    local rebuilt = {}
+    for _, cond in ipairs(conds) do
+      local inner = SFA_InjectDisposition(cond:sub(2, -2), forceDisposition) -- strip [ ]
+      rebuilt[#rebuilt + 1] = "[" .. inner .. "]"
+    end
+    return leadWs .. table.concat(rebuilt) .. spell
+  end
+
   if #conds == 0 then
     -- No conditional. If there's an actual spell, bind it to the frame unit.
     if spell:match("%S") then
       local inner = "@" .. unit
       if forceDisposition then inner = inner .. "," .. forceDisposition end
       return leadWs .. "[" .. inner .. "]" .. spell
-    elseif injectEvenIfBlank and forceDisposition and not spell:match("%S") then
-      -- Bare command (e.g. "/startattack" with nothing after it) and no
-      -- existing conditional -- still gate it, otherwise it runs
-      -- unconditionally against the live target regardless of disposition.
-      return leadWs .. "[@" .. unit .. "," .. forceDisposition .. "]"
     end
     return seg
   end
@@ -1308,20 +1343,34 @@ local function SFA_ResolveMacroForUnit(macroText, unit, forceDisposition)
     local lower = line:lower()
     local isCastSpell = lower:find("^%s*/cast") or lower:find("^%s*/use")
     local isTargetLike = lower:find("^%s*/target") or lower:find("^%s*/focus")
-    -- 0.26.21: /startattack (and /petattack) have no spell name and used
-    -- to fall straight through to outLines unchanged, ignoring
+    -- 0.26.21/0.26.24: /startattack (and /petattack) have no spell name
+    -- and used to fall straight through to outLines unchanged, ignoring
     -- forceDisposition entirely -- see SFA_ProcessSegment's comment for
-    -- the confirmed-live bug this caused. Gate them the same way /cast
-    -- and /use are gated, with injectEvenIfBlank so a bare
-    -- "/startattack" (no existing [..] conditional) still gets forced.
+    -- the confirmed-live bug this caused, and the follow-up comment there
+    -- for why they're gated with a BARE (unit-less) disposition rather
+    -- than "@unit,disposition" like /cast.
     local isAttackCmd = lower:find("^%s*/startattack") or lower:find("^%s*/petattack")
     if cmd and (isCastSpell or isTargetLike or isAttackCmd) then
       local segForce = (isCastSpell or isAttackCmd) and forceDisposition or nil
+      -- 0.26.24: guarantee a space between the command token and an
+      -- injected leading "[..]" for attack commands -- "/startattack"
+      -- (cmd captured with zero trailing whitespace, since the user's
+      -- original macro had nothing after it at all) glued directly to
+      -- "[@target,harm]" with no space in between is suspected to have
+      -- been silently treated as one unrecognized command token by the
+      -- macro parser (confirmed live: the whole line stopped firing
+      -- entirely, not just stopped misfiring). /cast's own bracket-
+      -- adjacency handling is special-cased for that command family and
+      -- is not assumed to extend to /startattack.
+      local effectiveCmd = cmd
+      if isAttackCmd and segForce and not effectiveCmd:match("%s$") then
+        effectiveCmd = effectiveCmd .. " "
+      end
       local segments = {}
       for seg in (rest .. ";"):gmatch("(.-);") do
         segments[#segments + 1] = SFA_ProcessSegment(seg, unit, segForce, isAttackCmd)
       end
-      outLines[#outLines + 1] = cmd .. table.concat(segments, ";")
+      outLines[#outLines + 1] = effectiveCmd .. table.concat(segments, ";")
     else
       outLines[#outLines + 1] = line
     end
