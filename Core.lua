@@ -1818,10 +1818,47 @@ end
 -- Merges the Right-click bypass overrides into an existing `desired`
 -- attribute table. Always writes every combo key explicitly (nil to clear
 -- when not bypassed this pass) -- never skip a key, per the 0.25.6 lesson.
--- The override value is ATTRIBUTE_NOOP ("") -- this only SUPPRESSES the
--- macro; SFA_OnManagedFrameClick (existing, live-proven OnClick hook)
--- separately calls the real native menu opener under the identical
--- modifier condition, checked against the same user configuration.
+--
+-- History: through 0.26.24 the override value was ATTRIBUTE_NOOP ("") --
+-- pure suppression of the click-cast macro -- and SFA_OnManagedFrameClick's
+-- insecure OnClick HookScript separately called UnitPopup_OpenMenu /
+-- MenuUtil.CreateContextMenu by hand to reconstruct a menu for the clicked
+-- unit. That reconstructed menu is NOT the real thing: it's built by this
+-- addon's own insecure Lua, so every protected action chosen from it (Set
+-- Focus confirmed live, 2026-11-19 -- "blocked from an action only
+-- available to the Blizzard UI") inherits that insecure taint and can get
+-- blocked, exactly like a raw TargetUnit()/SetFocus() call would (see
+-- 0.25.40's history above). It also had to independently reorder menu
+-- candidates (0.26.23) to match what Blizzard already knows how to pick
+-- correctly on its own.
+--
+-- 0.26.25 FIX: the secure action-button type system has a dedicated type
+-- for exactly this, "togglemenu" (confirmed via warcraft.wiki.gg's
+-- SecureActionButtonTemplate action-types table -- "Opens a unit popup
+-- menu at the cursor for this button's unit", added in 5.2, respects the
+-- frame's own "unit" attribute same as every other type). Writing it as
+-- the combo's typeN value runs entirely inside Blizzard's own secure
+-- click-dispatch -- same protected path as every "macro"/"target" click
+-- this addon already relies on -- so the menu that opens is the GENUINE
+-- native one: it varies correctly by target type on its own (no candidate
+-- list to maintain here) and nothing chosen from it is tainted, because no
+-- addon Lua ever touched it. SFA_OnManagedFrameClick's old reconstruction
+-- branch is now dead for this combo (see its own history note) rather than
+-- deleted, in case a frame type turns up where "togglemenu" doesn't apply.
+-- 0.26.25 BUG (REVERTED, see note above the function): tried "togglemenu"
+-- here instead of "" -- confirmed live (2026-11-19) that it does NOTHING
+-- on this client (no menu, no error, nothing in the log) -- "togglemenu"
+-- is documented on warcraft.wiki.gg but that page describes WoW 5.2-era
+-- behavior; this client's native unit menus clearly run through the
+-- newer Menu/MenuUtil API instead (that's WHY SFA's own reconstruction
+-- below has to use MenuUtil.CreateContextMenu/UnitPopup_OpenMenu rather
+-- than some simpler secure type), so the old secure "togglemenu" action
+-- type is most likely just unwired in the modern client. Back to "" +
+-- the Lua reconstruction until a genuinely untainted equivalent is found
+-- (candidate for next attempt: open the menu FROM INSIDE the secure
+-- _onattributechanged snippet itself, via a staged "please open" trigger
+-- attribute, the same pattern already used for sfa-apply-native -- NOT
+-- yet tried or verified).
 local function SFA_ApplyRightClickBypassOverrides(self, desired)
   local rowChecked = SFA_GetRightClickBypassConfig(self)
   for _, combo in ipairs(SFA_BYPASS_MODIFIER_COMBOS) do
@@ -2204,6 +2241,795 @@ local function SFA_TryOpenUnitMenuLegacy(self, unit, refKey)
   return false
 end
 
+-- 0.26.27: the only known-safe way to make a protected menu action
+-- untainted is a REAL secure button of our own (SecureActionButtonTemplate),
+-- fired by a genuine hardware click -- never a callback inside the
+-- Lua-reconstructed dropdown above (see the history note above
+-- SFA_ApplyRightClickBypassOverrides for the full reasoning: the taint
+-- comes from HOW the menu was opened, not from which function a button in
+-- it calls, so patching the dropdown's own buttons can never fix this).
+-- This is a small, SEPARATE floating button shown alongside the
+-- reconstructed menu (not inside it -- MenuUtil's dropdown is Blizzard's
+-- own widget, not a generic container we can park a foreign secure frame
+-- in). First increment: just "Set Focus", the one action confirmed
+-- blocked live (2026-11-19, user screenshot: "blocked from an action only
+-- available to the Blizzard UI"). Uses the exact same /focus [@unit]
+-- secure-macro mechanism already proven safe for years by the Left-click
+-- bypass (SFA_ApplyLeftClickBypassOverrides) and by every normal
+-- click-cast macro in this addon.
+--
+-- Created once, lazily, and only ever touched out of combat. No extra
+-- InCombatLockdown guard is needed at the two call sites below --
+-- SFA_OnManagedFrameClick already returns before reaching them whenever
+-- InCombatLockdown() is true (see its own guard, a few lines above where
+-- this is called), so by construction we're never in combat here. Still
+-- guarded here too, defensively, in case a future caller is added that
+-- doesn't go through that check.
+local SFA_FocusActionButton = nil
+local function SFA_EnsureFocusActionButton(self)
+  if SFA_FocusActionButton then return SFA_FocusActionButton end
+  if InCombatLockdown and InCombatLockdown() then
+    self:Log("native-click focus-button create-skipped-in-combat")
+    return nil
+  end
+  local ok, btn = pcall(CreateFrame, "Button", "SFA_FocusActionButton", UIParent,
+    "SecureActionButtonTemplate, UIPanelButtonTemplate")
+  if not ok or not btn then
+    self:Log("native-click focus-button create-failed err=%s", SFA_DescribeValue(btn))
+    return nil
+  end
+  btn:SetSize(110, 22)
+  btn:SetFrameStrata("TOOLTIP")
+  btn:RegisterForClicks("AnyUp", "AnyDown")
+  btn:SetText("Set Focus")
+  btn:SetAttribute("type", "macro")
+  btn:HookScript("PostClick", function() btn:Hide() end)
+  btn:Hide()
+  SFA_FocusActionButton = btn
+  self:Log("native-click focus-button created")
+  return btn
+end
+
+-- Shows the Set Focus button anchored near the clicked frame, with its
+-- macrotext resolved for THIS unit specifically (same SFA_ResolveMacroForUnit
+-- every other click-cast macro goes through). Auto-hides after a few
+-- seconds, or immediately once clicked (PostClick above), so it doesn't
+-- linger as visual clutter.
+--
+-- 0.26.36: no longer called from anywhere (see SFA_OnManagedFrameClick's
+-- tail) -- the legacy native self menu already has its own working Set
+-- Focus row, and this standalone button next to it was just clutter.
+-- Left defined in case a future client needs it back.
+local function SFA_ShowFocusActionButton(self, frame, unit)
+  if not unit then return end
+  if InCombatLockdown and InCombatLockdown() then return end
+  local btn = SFA_EnsureFocusActionButton(self)
+  if not btn then return end
+  local okMacro, macroText = pcall(SFA_ResolveMacroForUnit, "/focus [@unit]", unit)
+  if not okMacro then
+    self:Log("native-click focus-button resolve-failed err=%s", SFA_DescribeValue(macroText))
+    return
+  end
+  btn:SetAttribute("macrotext", macroText)
+  btn:ClearAllPoints()
+  if frame then
+    btn:SetPoint("TOPLEFT", frame, "BOTTOMRIGHT", 4, 0)
+  else
+    btn:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+  end
+  btn:Show()
+  if C_Timer and C_Timer.After then
+    C_Timer.After(6, function()
+      if btn and btn:IsShown() then btn:Hide() end
+    end)
+  end
+  self:Log("native-click focus-button shown frame=%s unit=%s macrotext=%s",
+    tostring(frame and frame.GetName and frame:GetName() or "?"), SFA_DescribeValue(unit), SFA_DescribeValue(macroText))
+end
+
+-- 0.26.28: full custom replacement menus (per user request, 2026-11-19:
+-- "vreau doua meniu unul pentru target si unul pentru self care sa
+-- contina toate optiunile stanse ... nu excludem nici o optiune"). These
+-- REPLACE SFA_TryOpenUnitMenuLegacy/SFA_TryPopulateNativeMenu above for
+-- the bypass combo (that code is left in place, just no longer called
+-- from SFA_OnManagedFrameClick -- see its own call site below) because
+-- every entry in THIS menu can be built from a mechanism that's actually
+-- known to be safe, instead of reopening Blizzard's own menu insecurely:
+--   "secure" rows: a REAL SecureActionButtonTemplate button, type="macro"
+--     -- the exact mechanism proven safe for years by /target and /focus
+--     in this addon, confirmed again by 0.26.27's standalone Set Focus
+--     button. Untainted because the click is a genuine hardware event on
+--     a secure frame, never an insecure Lua callback.
+--   "plain" rows: a direct insecure Lua call, used ONLY where research
+--     confirms the function is NOT protected for addon code --
+--     C_FriendList.AddFriend (warcraft.wiki.gg: tagged #noscript, i.e.
+--     blocked from /script specifically, not from addon Lua; NOT tagged
+--     #protected), C_ReportSystem.OpenReportPlayerDialog (warcraft.wiki.gg,
+--     verbatim: "not protected and therefore available to Addons, unlike
+--     C_ReportSystem.InitiateReportPlayer"), ChatFrame_SendTell/InspectUnit
+--     (already used safely in the old menu's fallback for years), and
+--     ShowUIPanel (a generic, long-standing, non-combat UI utility).
+--   "stub" rows: listed (per "nu excludem nici o optiune") but NOT wired
+--     to a real action -- used only for group/raid-management entries
+--     (Convert to Raid, Set Role, Reset all instances, Loot method/
+--     threshold, Leave Party, Self Highlight, Voice Chat) where neither a
+--     documented macro command nor a confirmed-unprotected API turned up.
+--     Clicking one just tells the player to use the native menu instead of
+--     silently doing nothing OR guessing at an unverified protected call
+--     (that guess-and-ship approach is exactly what 0.26.25's "togglemenu"
+--     attempt did, live, and it broke the menu outright -- not repeating
+--     that here).
+-- Target Marker Icon rows use "/tm N" (warcraft.wiki.gg/wiki/Target_marker)
+-- -- UNVERIFIED on this client specifically: that same page's Patch
+-- 12.0.0 (Midnight) note says "SetRaidTarget() has been protected and can
+-- no longer be called from macros", which may mean /tm itself is now a
+-- no-op here too. Shipped anyway since a dead row here is harmless and
+-- fully isolated (unlike the togglemenu regression, this touches nothing
+-- else in the addon) -- please test these specifically and report back.
+
+local SFA_MENU_ROW_W = 190
+local SFA_MENU_ROW_H = 18
+local SFA_MENU_HEADER_H = 16
+local SFA_MENU_SEP_H = 8
+local SFA_MENU_TITLE_H = 22
+
+local SFA_CustomMenuPanels = {}
+
+local function SFA_CustomMenuEnsurePanel(self, key)
+  if SFA_CustomMenuPanels[key] then return SFA_CustomMenuPanels[key] end
+  if InCombatLockdown and InCombatLockdown() then
+    self:Log("native-click custom-menu create-skipped-in-combat key=%s", key)
+    return nil
+  end
+  local ok, panel = pcall(function()
+    local p = CreateFrame("Frame", "SFA_CustomMenu_" .. key, UIParent, "BackdropTemplate")
+    p:SetFrameStrata("TOOLTIP")
+    p:SetClampedToScreen(true)
+    if p.SetBackdrop then
+      p:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        edgeSize = 12,
+        insets = { left = 3, right = 3, top = 3, bottom = 3 },
+      })
+      p:SetBackdropColor(0, 0, 0, 0.92)
+      p:SetBackdropBorderColor(0.6, 0.5, 0.2, 1)
+    end
+    p.plainChildren = {}
+    p.secureButtons = {}
+    p:Hide()
+    -- 0.26.30: user-reported ("nu reactioneaza cand dau escape") -- these
+    -- panels had no Escape handling at all. The standard, long-standing
+    -- WoW mechanism for this is UISpecialFrames: any frame whose GLOBAL
+    -- NAME is listed there gets auto-:Hide()'d on Escape by Blizzard's own
+    -- UI escape stack, same as every Blizzard panel and most addon
+    -- windows -- no OnKeyDown/EnableKeyboard wiring needed on our side.
+    -- Works for submenu flyouts too, since they're created through this
+    -- same function with their own unique name.
+    if UISpecialFrames and p:GetName() then
+      tinsert(UISpecialFrames, p:GetName())
+    end
+    return p
+  end)
+  if not ok or not panel then
+    self:Log("native-click custom-menu create-failed key=%s err=%s", key, SFA_DescribeValue(panel))
+    return nil
+  end
+  SFA_CustomMenuPanels[key] = panel
+  return panel
+end
+
+-- Builds the "plain" (no safe action yet) click handler shared by every
+-- stub row, so the player gets told what's going on instead of a dead
+-- button with no feedback.
+local function SFA_StubRowHandler(self, label)
+  return function()
+    self:Print(label .. ": no safe implementation yet -- use the native menu (plain right-click, no modifier) for this.")
+  end
+end
+
+-- Renders `rows` (see SFA_BuildTargetMenuRows/SFA_BuildSelfMenuRows for the
+-- row-spec shape) into the panel for `panelKey`, anchored near `frame`,
+-- and shows it. Secure button rows are persistent (created once per id,
+-- reused/repositioned/retexted on every render -- required, since they're
+-- protected frames once created and can only be touched out of combat,
+-- which SFA_OnManagedFrameClick already guarantees by the time this runs).
+-- Plain/title/header/separator rows are cheap, unprotected frames and are
+-- just recreated fresh each render.
+local function SFA_RenderCustomMenu(self, panelKey, frame, rows, anchorPoint, anchorRelPoint)
+  local panel = SFA_CustomMenuEnsurePanel(self, panelKey)
+  if not panel then return end
+
+  for _, child in ipairs(panel.plainChildren) do
+    if child.Hide then child:Hide() end
+    if child.SetParent then child:SetParent(nil) end
+  end
+  panel.plainChildren = {}
+
+  local usedSecureIds = {}
+  local y = -8
+  for _, row in ipairs(rows) do
+    if row.kind == "title" then
+      local fs = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+      fs:SetPoint("TOPLEFT", panel, "TOPLEFT", 10, y)
+      fs:SetText(row.text or "")
+      panel.plainChildren[#panel.plainChildren + 1] = fs
+      y = y - SFA_MENU_TITLE_H
+    elseif row.kind == "header" then
+      local fs = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+      fs:SetPoint("TOPLEFT", panel, "TOPLEFT", 10, y)
+      fs:SetTextColor(1, 0.82, 0)
+      fs:SetText(row.text or "")
+      panel.plainChildren[#panel.plainChildren + 1] = fs
+      y = y - SFA_MENU_HEADER_H
+    elseif row.kind == "sep" then
+      local tex = panel:CreateTexture(nil, "ARTWORK")
+      tex:SetColorTexture(0.5, 0.5, 0.5, 0.5)
+      tex:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, y)
+      tex:SetSize(SFA_MENU_ROW_W - 16, 1)
+      panel.plainChildren[#panel.plainChildren + 1] = tex
+      y = y - SFA_MENU_SEP_H
+    elseif row.kind == "plain" or row.kind == "stub" then
+      local btn = CreateFrame("Button", nil, panel)
+      btn:SetSize(SFA_MENU_ROW_W - 16, SFA_MENU_ROW_H)
+      btn:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, y)
+      local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+      fs:SetPoint("LEFT", btn, "LEFT", 2, 0)
+      fs:SetText(row.kind == "stub" and (row.label .. " *") or row.label)
+      if row.kind == "stub" then fs:SetTextColor(0.6, 0.6, 0.6) end
+      btn:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+      local fn = row.fn
+      btn:SetScript("OnClick", function()
+        pcall(fn)
+        panel:Hide()
+      end)
+      panel.plainChildren[#panel.plainChildren + 1] = btn
+      y = y - SFA_MENU_ROW_H
+    elseif row.kind == "secure" then
+      usedSecureIds[row.id] = true
+      local btn = panel.secureButtons[row.id]
+      if not btn then
+        local okBtn, created = pcall(CreateFrame, "Button",
+          "SFA_CustomMenuBtn_" .. panelKey .. "_" .. row.id, panel, "SecureActionButtonTemplate")
+        if okBtn and created then
+          btn = created
+          btn:RegisterForClicks("AnyUp", "AnyDown")
+          btn:SetAttribute("type", "macro")
+          local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+          fs:SetPoint("LEFT", btn, "LEFT", 2, 0)
+          btn.sfaFontString = fs
+          local hl = btn:CreateTexture(nil, "HIGHLIGHT")
+          hl:SetAllPoints()
+          hl:SetColorTexture(1, 1, 1, 0.15)
+          btn:HookScript("PostClick", function() panel:Hide() end)
+          panel.secureButtons[row.id] = btn
+        else
+          self:Log("native-click custom-menu secure-row-create-failed key=%s id=%s err=%s",
+            panelKey, row.id, SFA_DescribeValue(created))
+        end
+      end
+      if btn then
+        btn:SetSize(SFA_MENU_ROW_W - 16, SFA_MENU_ROW_H)
+        btn:ClearAllPoints()
+        btn:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, y)
+        btn.sfaFontString:SetText(row.label)
+        if row.macro then
+          btn:SetAttribute("macrotext", row.macro)
+          btn:Show()
+        else
+          btn:Hide()
+        end
+      end
+      y = y - SFA_MENU_ROW_H
+    elseif row.kind == "submenu" then
+      local submenuKey = panelKey .. "_" .. row.key
+      local btn = CreateFrame("Button", nil, panel)
+      btn:SetSize(SFA_MENU_ROW_W - 16, SFA_MENU_ROW_H)
+      btn:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, y)
+      local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+      fs:SetPoint("LEFT", btn, "LEFT", 2, 0)
+      -- 0.26.32: the Unicode arrow (U+25B6) rendered as a missing-glyph
+      -- box live -- confirmed by user screenshot -- WoW's default fonts
+      -- don't cover that codepoint. Plain ASCII ">" always renders.
+      fs:SetText(row.label .. "  >")
+      btn:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+      local build = row.build
+      btn:SetScript("OnClick", function()
+        local childPanel = SFA_CustomMenuPanels[submenuKey]
+        if childPanel and childPanel:IsShown() then
+          childPanel:Hide()
+          return
+        end
+        local okChild, childRows = pcall(build)
+        if not okChild then
+          self:Log("native-click custom-menu submenu-build-failed key=%s err=%s", submenuKey, SFA_DescribeValue(childRows))
+          return
+        end
+        SFA_RenderCustomMenu(self, submenuKey, btn, childRows, "TOPLEFT", "TOPRIGHT")
+      end)
+      panel.plainChildren[#panel.plainChildren + 1] = btn
+      y = y - SFA_MENU_ROW_H
+    end
+  end
+
+  for id, btn in pairs(panel.secureButtons) do
+    if not usedSecureIds[id] and btn.Hide then btn:Hide() end
+  end
+
+  panel:SetSize(SFA_MENU_ROW_W, (-y) + 8)
+  panel:ClearAllPoints()
+  if frame then
+    panel:SetPoint(anchorPoint or "TOPLEFT", frame, anchorRelPoint or "BOTTOMRIGHT", 4, 0)
+  else
+    panel:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+  end
+  panel:Show()
+  if C_Timer and C_Timer.After then
+    C_Timer.After(20, function()
+      if panel:IsShown() then panel:Hide() end
+    end)
+  end
+end
+
+-- Small persistent popup with a pre-selected, copyable name -- the safe
+-- equivalent of "Copy Character Name" (clipboard access itself isn't
+-- exposed to addons; select-all-and-Ctrl+C in a normal edit box is the
+-- standard WoW addon workaround for this, used by many addons for years).
+local SFA_CopyNameBox = nil
+local function SFA_ShowCopyNameBox(name)
+  if not name then return end
+  if not SFA_CopyNameBox then
+    local ok, f = pcall(function()
+      local box = CreateFrame("Frame", "SFA_CopyNameBox", UIParent, "BackdropTemplate")
+      box:SetSize(220, 56)
+      box:SetPoint("CENTER")
+      box:SetFrameStrata("TOOLTIP")
+      if box.SetBackdrop then
+        box:SetBackdrop({
+          bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+          edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+          edgeSize = 12,
+          insets = { left = 3, right = 3, top = 3, bottom = 3 },
+        })
+        box:SetBackdropColor(0, 0, 0, 0.95)
+      end
+      local label = box:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+      label:SetPoint("TOP", box, "TOP", 0, -8)
+      label:SetText("Ctrl+C, then Escape")
+      local eb = CreateFrame("EditBox", nil, box)
+      eb:SetSize(200, 20)
+      eb:SetPoint("CENTER", box, "CENTER", 0, -6)
+      eb:SetAutoFocus(true)
+      eb:SetFontObject(ChatFontNormal)
+      eb:SetScript("OnEscapePressed", function() box:Hide() end)
+      eb:SetScript("OnEnterPressed", function() box:Hide() end)
+      box.editBox = eb
+      box:Hide()
+      if UISpecialFrames and box:GetName() then
+        tinsert(UISpecialFrames, box:GetName())
+      end
+      return box
+    end)
+    if not ok or not f then return end
+    SFA_CopyNameBox = f
+  end
+  SFA_CopyNameBox.editBox:SetText(name)
+  SFA_CopyNameBox.editBox:HighlightText()
+  SFA_CopyNameBox:Show()
+  SFA_CopyNameBox.editBox:SetFocus()
+end
+
+-- 0.26.33: translated to English (user request -- "trebuie sa fie in
+-- engleza") -- was Romanian (Stea/Cerc/etc).
+local SFA_MARKER_NAMES = { "Star", "Circle", "Diamond", "Triangle", "Moon", "Square", "Cross", "Skull" }
+
+-- Shared marker submenu content (0.26.29: moved into a real flyout
+-- submenu, per user request -- "pe partea set icons, nu se poate face
+-- submeniu cum are blizzard frame?" -- instead of 8 rows inlined into the
+-- main list). Used by both the Target and Self menus. Still the same
+-- unverified-on-this-client "/tm" command noted in the 0.26.28 history.
+-- 0.26.33: added a "Clear" row (user request) -- "/tm 0" is the
+-- long-standing community convention for clearing a marker (no dedicated
+-- clear command is documented separately from /tm itself); same
+-- unverified-on-this-client caveat as the 8 numbered rows above it.
+local function SFA_BuildMarkerRows(unit)
+  local rows = {}
+  for i = 1, 8 do
+    local okM, macroText = pcall(SFA_ResolveMacroForUnit, "/target [@unit]\n/tm " .. i, unit)
+    rows[#rows + 1] = { kind = "secure", id = "tm" .. i, label = SFA_MARKER_NAMES[i], macro = okM and macroText or nil }
+  end
+  do
+    local okM, macroText = pcall(SFA_ResolveMacroForUnit, "/target [@unit]\n/tm 0", unit)
+    rows[#rows + 1] = { kind = "secure", id = "tmclear", label = "Clear", macro = okM and macroText or nil }
+  end
+  return rows
+end
+
+-- 0.26.33 tried On/Off as a submenu ("/pvp on" / "/pvp off"), on the
+-- assumption those were literal set-state arguments. 0.26.34 REVERTED
+-- (user confirmed live, 2026-11-19: "nu se nimereste on sau off orice dai
+-- face toggle" -- both buttons just toggle, neither one reliably lands on
+-- a specific state) -- so "on"/"off" aren't real arguments to /pvp on
+-- this client after all, just unrecognized text that /pvp ignores, same
+-- toggle either way. Back to the single plain "/pvp" toggle button.
+
+-- 0.26.33: Loot Options as a submenu (user request), same two stub
+-- entries as before -- still no confirmed-safe implementation for either
+-- (loot method/threshold are raid-management APIs, no documented macro
+-- command found), just nested the way Blizzard's own menu nests them.
+local function SFA_BuildLootRows(self)
+  return {
+    { kind = "stub", label = "Loot: Group Loot", fn = SFA_StubRowHandler(self, "Loot: Group Loot") },
+    { kind = "stub", label = "Pass on Loot", fn = SFA_StubRowHandler(self, "Pass on Loot") },
+  }
+end
+
+-- 0.26.35 had a local SFA_IsForeverClient() further down this file
+-- (shadowing the global of the same name near the top) to gate the
+-- custom TARGET/SELF menus to the Forever client only. 0.26.36 REMOVES
+-- that gating entirely -- see the big comment in SFA_OnManagedFrameClick's
+-- tail for why (the legacy native menu turned out not to need the
+-- workaround on other clients either) -- so the per-client check needed
+-- here now only has to answer "is this Midnight", to decide whether to
+-- add the two extra native entries (Pet-battle Duel, Compare Achievements)
+-- that only exist there. Defined up here, before SFA_BuildTargetMenuRows,
+-- because that function calls it -- a `local function` is only visible as
+-- an upvalue to code written AFTER its own definition.
+--
+-- Detection: GetBuildInfo()'s 4th return is the "tocversion" number,
+-- encoded major*10000 + minor*100 + patch (confirmed against this
+-- addon's own .toc Interface list: 11509 = 1.15.09, 16001 = 1.60.01,
+-- 120100/120105/120107 = 12.01.0x). User-confirmed live version ranges
+-- (2026-11-19): Classic Era is 1.15.x, WoW Forever is 1.60.x, Midnight is
+-- 12.1.x -- so major >= 12 identifies Midnight specifically and is
+-- stable across its own patch revisions.
+local function SFA_IsMidnightClient()
+  local okBuild, _, _, _, tocversion = pcall(GetBuildInfo)
+  if not okBuild or type(tocversion) ~= "number" then return false end
+  local major = math.floor(tocversion / 10000)
+  return major >= 12
+end
+
+-- 0.26.41: user asked (2026-11-19) "poti determina ce optiuni exista in
+-- meniu pe fiecare model de joc? si daca nu exista sa nu afisezi?" --
+-- generalizes what SFA_IsMidnightClient() already did for the two
+-- Compare Achievements/Pet-battle Duel rows (hardcoded by client version)
+-- into a row-by-row EXISTENCE probe: instead of guessing which client has
+-- which feature, just check whether the actual global/API the row needs
+-- is really there on THIS client, right now, and only add the row if so.
+-- `getter` is a function that returns the value to check (wrapped in
+-- pcall so an indexing error on a missing parent table, e.g. a nil
+-- C_FriendList, counts as "doesn't exist" instead of throwing) --
+-- used for "plain" rows that call a specific modern API that may not
+-- exist on every client (Edit Mode, Report Player, Add Friend). Not used
+-- for "secure" (macro) rows -- slash commands aren't introspectable the
+-- same way, and the ones used here (/focus, /target, /invite, /duel,
+-- /trade, /follow) are old enough to be safe to assume universal; nor for
+-- the Compare Achievements/Pet-battle Duel rows, which stay gated by
+-- SFA_IsMidnightClient() specifically because the user confirmed live
+-- that Forever's native menu doesn't show them even though the
+-- underlying APIs could still exist there.
+local function SFA_ApiExists(getter)
+  local ok, v = pcall(getter)
+  return ok and v ~= nil
+end
+
+-- Row list for any non-self unit (target/focus/party/raid/NPC -- the union
+-- of every variant seen live: friendly NPC, enemy NPC, friendly player).
+local function SFA_BuildTargetMenuRows(self, unit)
+  local unitName = UnitName(unit) or "?"
+  local rows = {}
+  local function title(t) rows[#rows + 1] = { kind = "title", text = t } end
+  local function header(t) rows[#rows + 1] = { kind = "header", text = t } end
+  local function sep() rows[#rows + 1] = { kind = "sep" } end
+  local function secure(id, label, macro) rows[#rows + 1] = { kind = "secure", id = id, label = label, macro = macro } end
+  local function plain(label, fn) rows[#rows + 1] = { kind = "plain", label = label, fn = fn } end
+  local function stub(label) rows[#rows + 1] = { kind = "stub", label = label, fn = SFA_StubRowHandler(self, label) } end
+  local function submenu(key, label, build) rows[#rows + 1] = { kind = "submenu", key = key, label = label, build = build } end
+
+  title(unitName)
+
+  submenu("markers", "Target Marker Icon", function() return SFA_BuildMarkerRows(unit) end)
+
+  do
+    local okM, macroText = pcall(SFA_ResolveMacroForUnit, "/focus [@unit]", unit)
+    secure("focus", "Set Focus", okM and macroText or nil)
+  end
+  -- 0.26.31: user-requested -- "pe target pune si clear focus sub set
+  -- focus". /clearfocus is a standard, unit-less secure macro command
+  -- (same category as /focus itself), so this needs no [@unit] at all --
+  -- it just clears whatever focus is currently set, regardless of which
+  -- unit was clicked.
+  secure("clearfocus", "Clear Focus", "/clearfocus")
+
+  if SFA_ApiExists(function() return C_FriendList.AddFriend end) then
+    plain("Add Friend", function()
+      local name = UnitName(unit)
+      if name and C_FriendList and C_FriendList.AddFriend then
+        C_FriendList.AddFriend(name)
+      end
+    end)
+  end
+
+  sep()
+  header("Interact")
+
+  do
+    local name = UnitName(unit)
+    secure("invite", "Invite", name and ("/invite " .. name) or nil)
+  end
+
+  plain("Whisper", function()
+    local name = UnitName(unit)
+    if name and ChatFrame_SendTell then ChatFrame_SendTell(name) end
+  end)
+
+  plain("Inspect", function()
+    if InspectUnit then InspectUnit(unit)
+    elseif NotifyInspect then NotifyInspect(unit) end
+  end)
+
+  plain("View Talents", function()
+    if InspectUnit then InspectUnit(unit)
+    elseif NotifyInspect then NotifyInspect(unit) end
+  end)
+
+  -- 0.26.36: Midnight-only native entries (user screenshot, 2026-11-19,
+  -- taken on a non-Forever client, showed these; Forever/Classic Era
+  -- don't have them per the user). Neither warcraft.wiki.gg page tags
+  -- its function #protected -- the same evidentiary bar this file
+  -- already uses elsewhere (e.g. C_FriendList.AddFriend) to treat a call
+  -- as safe to make directly.
+  --
+  -- 0.26.37: user live-tested 0.26.36's version of this row (just
+  -- SetAchievementComparisonUnit(unit)) and reported "nu merge" -- nothing
+  -- visible happened. Likely cause: SetAchievementComparisonUnit only sets
+  -- internal comparison state and fires INSPECT_ACHIEVEMENT_READY once the
+  -- server responds -- warcraft.wiki.gg's own description never mentions
+  -- it opening any frame, so the native button almost certainly also
+  -- opens/toggles the Achievement UI itself. Could not confirm the exact
+  -- Blizzard source for that second call (fetch attempts on the mirrored
+  -- UI source failed), so this tries every plausible untainted candidate,
+  -- in order, logging which one actually ran -- same "try candidates,
+  -- don't guess-and-commit-to-one" approach already used for the legacy
+  -- menu resolver elsewhere in this file. STILL UNCONFIRMED live --
+  -- please test again and report which (if any) actually opens the
+  -- comparison view.
+  if SFA_IsMidnightClient() then
+    plain("Compare Achievements", function()
+      -- 0.26.40: user live-tested 0.26.39 and it STILL only opened the
+      -- plain Achievement Frame -- "la fel deschide fereastra de achiev
+      -- nu de compare achiev". Root cause: Blizzard_AchievementUI is a
+      -- load-on-demand addon (like every Blizzard panel addon) --
+      -- AchievementFrame_DisplayComparison is DEFINED INSIDE that addon's
+      -- own file, so the global is nil (not an error, just absent) until
+      -- that addon has actually been loaded into memory at least once
+      -- this session. ToggleAchievementFrame, by contrast, is one of the
+      -- small always-loaded FrameXML stub functions whose whole job is to
+      -- load its addon on first call -- which is exactly why the fallback
+      -- kept "working" (opening the plain frame) while the real function
+      -- was never found: the type() check ran BEFORE that load ever
+      -- happened. Fix: force-load Blizzard_AchievementUI explicitly
+      -- first, THEN look for AchievementFrame_DisplayComparison -- it
+      -- should exist immediately after LoadAddOn returns (on-demand addon
+      -- code runs synchronously during that call, same as any other).
+      if type(AchievementFrame_DisplayComparison) ~= "function" then
+        if C_AddOns and C_AddOns.LoadAddOn then
+          pcall(C_AddOns.LoadAddOn, "Blizzard_AchievementUI")
+        elseif LoadAddOn then
+          pcall(LoadAddOn, "Blizzard_AchievementUI")
+        end
+      end
+      local okSet, setErr = pcall(SetAchievementComparisonUnit, unit)
+      local openedVia = nil
+      if type(AchievementFrame_DisplayComparison) == "function" then
+        local okOpen = pcall(AchievementFrame_DisplayComparison, unit)
+        if okOpen then openedVia = "AchievementFrame_DisplayComparison" end
+      end
+      if not openedVia and type(ToggleAchievementFrame) == "function" then
+        local okOpen = pcall(ToggleAchievementFrame)
+        if okOpen then openedVia = "ToggleAchievementFrame (fallback, no compare view)" end
+      end
+      if not openedVia and AchievementFrame and type(ShowUIPanel) == "function" then
+        local okOpen = pcall(ShowUIPanel, AchievementFrame)
+        if okOpen then openedVia = "ShowUIPanel(AchievementFrame) (fallback, no compare view)" end
+      end
+      if not openedVia and AchievementFrameComparison and type(ShowUIPanel) == "function" then
+        local okOpen = pcall(ShowUIPanel, AchievementFrameComparison)
+        if okOpen then openedVia = "ShowUIPanel(AchievementFrameComparison)" end
+      end
+      self:Log("native-click custom-menu compare-achievements set-ok=%s set-err=%s opened-via=%s",
+        tostring(okSet), okSet and "" or SFA_DescribeValue(setErr), openedVia or "none")
+    end)
+  end
+
+  do
+    local okM, macroText = pcall(SFA_ResolveMacroForUnit, "/target [@unit]\n/trade", unit)
+    secure("trade", "Trade", okM and macroText or nil)
+  end
+  do
+    local okM, macroText = pcall(SFA_ResolveMacroForUnit, "/target [@unit]\n/follow", unit)
+    secure("follow", "Follow", okM and macroText or nil)
+  end
+  do
+    local name = UnitName(unit)
+    secure("duel", "Duel", name and ("/duel " .. name) or nil)
+  end
+
+  -- 0.26.36: C_PetBattles.StartPVPDuel() takes no unit argument -- per
+  -- warcraft.wiki.gg it challenges the PLAYER'S CURRENT TARGET, not
+  -- whichever unit this row list happens to be built for. Correct only
+  -- when the clicked frame's unit is already the real target (true for
+  -- the common case: right-clicking TargetFrame itself). Not forced to
+  -- the right unit here because TargetUnit() is itself a protected call
+  -- this addon can't make directly (see the 0.25.40 history above).
+  -- UNTESTED live.
+  if SFA_IsMidnightClient() then
+    plain("Pet-battle Duel", function()
+      if C_PetBattles and C_PetBattles.StartPVPDuel then C_PetBattles.StartPVPDuel() end
+    end)
+  end
+
+  sep()
+  header("Other Options")
+
+  -- 0.26.41: Edit Mode is a retail-era feature (added 9.0/Shadowlands) --
+  -- EditModeManagerFrame likely doesn't exist on Classic Era/Forever at
+  -- all. Existence-checked instead of hardcoded, same reasoning as
+  -- SFA_ApiExists's own comment above.
+  if SFA_ApiExists(function() return EditModeManagerFrame end) then
+    plain("Edit Mode", function()
+      if ShowUIPanel and EditModeManagerFrame then ShowUIPanel(EditModeManagerFrame) end
+    end)
+  end
+
+  if SFA_ApiExists(function() return C_ReportSystem.OpenReportPlayerDialog end) then
+    plain("Report Player", function()
+      local name = UnitName(unit)
+      if name and C_ReportSystem and C_ReportSystem.OpenReportPlayerDialog then
+        C_ReportSystem.OpenReportPlayerDialog("cheating", name)
+      end
+    end)
+  end
+
+  plain("Copy Character Name", function()
+    SFA_ShowCopyNameBox(UnitName(unit))
+  end)
+
+  return rows
+end
+
+-- Row list for the player's own frame (self) -- adds the party/raid/
+-- instance-management entries seen on PlayerFrame that never appear on
+-- another unit's menu. Most of these have no documented macro command and
+-- no confirmed-unprotected API, so they're "stub" rows (see the big
+-- comment above this section) rather than a guess.
+--
+-- 0.26.36: no longer used -- SFA_OnManagedFrameClick's tail no longer
+-- calls SFA_ShowSelfMenu for self clicks (the legacy native menu turned
+-- out not to be taint-blocked for self, so there was nothing to replace
+-- there). Left defined in case a future client regresses and needs it.
+local function SFA_BuildSelfMenuRows(self, unit)
+  local unitName = UnitName(unit) or "?"
+  local rows = {}
+  local function title(t) rows[#rows + 1] = { kind = "title", text = t } end
+  local function header(t) rows[#rows + 1] = { kind = "header", text = t } end
+  local function sep() rows[#rows + 1] = { kind = "sep" } end
+  local function secure(id, label, macro) rows[#rows + 1] = { kind = "secure", id = id, label = label, macro = macro } end
+  local function plain(label, fn) rows[#rows + 1] = { kind = "plain", label = label, fn = fn } end
+  local function stub(label) rows[#rows + 1] = { kind = "stub", label = label, fn = SFA_StubRowHandler(self, label) } end
+  local function submenu(key, label, build) rows[#rows + 1] = { kind = "submenu", key = key, label = label, build = build } end
+
+  title(unitName)
+
+  submenu("markers", "Target Marker Icon", function() return SFA_BuildMarkerRows(unit) end)
+
+  do
+    local okM, macroText = pcall(SFA_ResolveMacroForUnit, "/focus [@unit]", unit)
+    secure("focus", "Set Focus", okM and macroText or nil)
+  end
+
+  stub("Self Highlight")
+  secure("pvp", "Player vs. Player", "/pvp")
+
+  sep()
+  submenu("loot", "Loot Options", function() return SFA_BuildLootRows(self) end)
+
+  sep()
+  header("Instance Options")
+  stub("Convert To Raid")
+  stub("Reset all instances")
+
+  sep()
+  header("Other Options")
+
+  -- 0.26.41: existence-checked, same as the target menu's Edit Mode row
+  -- -- kept consistent even though this builder is currently unused.
+  if SFA_ApiExists(function() return EditModeManagerFrame end) then
+    plain("Edit Mode", function()
+      if ShowUIPanel and EditModeManagerFrame then ShowUIPanel(EditModeManagerFrame) end
+    end)
+  end
+  stub("Voice Chat")
+  stub("Set Role")
+  stub("Leave Party")
+
+  return rows
+end
+
+local function SFA_ShowTargetMenu(self, frame, unit)
+  if not unit then return end
+  if InCombatLockdown and InCombatLockdown() then return end
+  local okRows, rows = pcall(SFA_BuildTargetMenuRows, self, unit)
+  if not okRows then
+    self:Log("native-click custom-menu target-build-failed err=%s", SFA_DescribeValue(rows))
+    return
+  end
+  SFA_RenderCustomMenu(self, "target", frame, rows)
+end
+
+local function SFA_ShowSelfMenu(self, frame, unit)
+  if not unit then return end
+  if InCombatLockdown and InCombatLockdown() then return end
+  local okRows, rows = pcall(SFA_BuildSelfMenuRows, self, unit)
+  if not okRows then
+    self:Log("native-click custom-menu self-build-failed err=%s", SFA_DescribeValue(rows))
+    return
+  end
+  SFA_RenderCustomMenu(self, "self", frame, rows)
+end
+
+-- 0.26.42: FocusFrame got the same taint block TargetFrame originally
+-- had (user, 2026-11-19: "pt focus frame, sa faci un meniu mic pt ca ma
+-- blocheaza daca dau clear focus"), but only for Clear Focus specifically
+-- -- it was still going through the legacy/MenuUtil reconstruction (only
+-- TargetFrame was carved out in 0.26.37). Small, purpose-built menu, not
+-- a copy of SFA_BuildTargetMenuRows: a focus frame's unit already IS the
+-- current focus, so "Set Focus" doesn't make sense here the way it does
+-- on target -- the user's own mockup screenshot has just marker icons and
+-- Clear Focus, plus Other Options/Edit Mode, nothing else. Built from
+-- that screenshot exactly: title -> Target Marker Icon submenu -> Clear
+-- Focus (secure, untainted) -> sep -> Other Options -> Edit Mode
+-- (existence-checked, see SFA_ApiExists above).
+local function SFA_BuildFocusMenuRows(self, unit)
+  local unitName = UnitName(unit) or "?"
+  local rows = {}
+  local function title(t) rows[#rows + 1] = { kind = "title", text = t } end
+  local function header(t) rows[#rows + 1] = { kind = "header", text = t } end
+  local function sep() rows[#rows + 1] = { kind = "sep" } end
+  local function secure(id, label, macro) rows[#rows + 1] = { kind = "secure", id = id, label = label, macro = macro } end
+  local function plain(label, fn) rows[#rows + 1] = { kind = "plain", label = label, fn = fn } end
+  local function submenu(key, label, build) rows[#rows + 1] = { kind = "submenu", key = key, label = label, build = build } end
+
+  title(unitName)
+
+  submenu("markers", "Target Marker Icon", function() return SFA_BuildMarkerRows(unit) end)
+
+  secure("clearfocus", "Clear Focus", "/clearfocus")
+
+  sep()
+  header("Other Options")
+
+  if SFA_ApiExists(function() return EditModeManagerFrame end) then
+    plain("Edit Mode", function()
+      if ShowUIPanel and EditModeManagerFrame then ShowUIPanel(EditModeManagerFrame) end
+    end)
+  end
+
+  return rows
+end
+
+local function SFA_ShowFocusMenu(self, frame, unit)
+  if not unit then return end
+  if InCombatLockdown and InCombatLockdown() then return end
+  local okRows, rows = pcall(SFA_BuildFocusMenuRows, self, unit)
+  if not okRows then
+    self:Log("native-click custom-menu focus-build-failed err=%s", SFA_DescribeValue(rows))
+    return
+  end
+  SFA_RenderCustomMenu(self, "focus", frame, rows)
+end
+
 local function SFA_OnManagedFrameClick(self, frame, refKey, button)
   -- 2026-11-06, user-reported (WoW Forever): clicking TargetFrame with an
   -- ally/enemy targeted who itself has a target fires the correct
@@ -2321,6 +3147,14 @@ local function SFA_OnManagedFrameClick(self, frame, refKey, button)
   local rightRowChecked = SFA_GetRightClickBypassConfig(self)
   if not SFA_RowModifiersHeld(rightRowChecked) then return end
 
+  -- 0.26.25 tried to make this branch dead code (superseded by a
+  -- "togglemenu" secure-attribute override) -- REVERTED in 0.26.26,
+  -- confirmed live that "togglemenu" opens nothing at all on this client.
+  -- This reconstruction is back to being the only way this addon opens a
+  -- native-ish menu for the bypass combo. See the history note above
+  -- SFA_ApplyRightClickBypassOverrides for what's still unproven as a
+  -- genuinely untainted replacement.
+
   -- 0.25.27: user reported (2026-09-02) the AddOn list's "Interface actions
   -- failed because of this AddOn" counter climbing (44 and counting), tied
   -- to combat, with no catchable Lua error in the debug log (debug was off
@@ -2342,9 +3176,55 @@ local function SFA_OnManagedFrameClick(self, frame, refKey, button)
 
   self:Log("native-click ctrlalt-menu trigger frame=%s unit=%s", refKey, SFA_DescribeValue(unit))
 
-  -- 0.25.14: try the legacy-named-but-live UnitPopup_OpenMenu first -- if
-  -- it actually opens Blizzard's own menu, we're done and don't need our
-  -- own MenuUtil container at all.
+  -- 0.26.28: replaced the old UnitPopup_OpenMenu/MenuUtil reconstruction
+  -- with our own full custom TARGET menu -- see the big comment above
+  -- SFA_BuildTargetMenuRows for why: every row there is either a real
+  -- secure button (untainted) or a confirmed-unprotected direct call,
+  -- instead of reopening Blizzard's own menu through an insecure Lua call
+  -- and risking the same taint block on whichever entry gets clicked.
+  --
+  -- 0.26.35 gated this to the Forever client only, on the assumption that
+  -- Set Focus was blocked the same way on every client's native menu.
+  -- 0.26.36 corrected that (the legacy/MenuUtil reconstruction below
+  -- turned out untainted on non-Forever clients too, screenshot
+  -- 2026-11-19) and widened it to every non-self unit on all 3 client
+  -- types. 0.26.37 narrows it again, per the user (2026-11-19): "deci
+  -- self si party frames raman native, raid frames etc, da? doar target
+  -- frame se va modifica" -- confirmed, ONLY TargetFrame itself gets the
+  -- custom menu. Every other managed frame (PlayerFrame/self, party/raid/
+  -- arena member frames, anonymous nameplate frames) falls through to the
+  -- legacy/MenuUtil reconstruction below, same as every client used
+  -- before 0.26.28. 0.26.42 adds FocusFrame as a SECOND carve-out, per
+  -- the user's own mockup screenshot (2026-11-19: "pt focus frame, sa
+  -- faci un meniu mic pt ca ma blocheaza daca dau clear focus") -- the
+  -- legacy menu's Clear Focus is tainted on FocusFrame specifically, same
+  -- bug class as TargetFrame's original Set Focus, so it gets its own
+  -- small custom menu (SFA_BuildFocusMenuRows) instead of being folded
+  -- into the target one (a focus frame's unit already IS the current
+  -- focus -- "Set Focus" doesn't belong there the way it does on target).
+  -- This is a frame-IDENTITY check (refKey, i.e. frame:GetName()), not a
+  -- unit-relationship check -- see SFA_ResolveFrameMenuTagHints above for
+  -- the same refKey patterns ("PlayerFrame", "TargetFrame", "FocusFrame",
+  -- strings containing "Party"/"Raid"/"Arena").
+  -- SFA_BuildSelfMenuRows/SFA_ShowSelfMenu are left defined above (unused
+  -- for now) in case a future client regresses here and needs a custom
+  -- self menu back. The standalone Set Focus button
+  -- (SFA_ShowFocusActionButton, 0.26.27) that used to be shown here
+  -- unconditionally before the legacy menu opened is also dropped --
+  -- user-reported (2026-11-19) as visual clutter now that the legacy
+  -- menu's own Set Focus row already works on its own ("s-a propagat
+  -- butonul de set focus pus inainte de meniu"); its function is kept
+  -- defined above, just no longer called from here.
+  if refKey == "TargetFrame" then
+    SFA_ShowTargetMenu(self, frame, unit)
+    return
+  end
+
+  if refKey == "FocusFrame" then
+    SFA_ShowFocusMenu(self, frame, unit)
+    return
+  end
+
   local openedLegacy, legacyWhich, legacySig = SFA_TryOpenUnitMenuLegacy(self, unit, refKey)
   self:Log("native-click ctrlalt-menu legacy-opened=%s which=%s sig=%s",
     tostring(openedLegacy), tostring(legacyWhich), tostring(legacySig))
@@ -2359,17 +3239,10 @@ local function SFA_OnManagedFrameClick(self, frame, refKey, button)
     MenuUtil.CreateContextMenu(frame, function(owner, rootDescription)
       rootDescription:CreateTitle(SFA_DescribeValue(unit))
 
-      -- 0.25.13: try to fill the menu with Blizzard's REAL content for
-      -- this unit (see SFA_TryPopulateNativeMenu). Independent of the
-      -- frame's own click routing, so this should work whether or not
-      -- click-cast is currently overriding this button.
       local populated, matchedTag, matchedSig = SFA_TryPopulateNativeMenu(self, rootDescription, unit)
       self:Log("native-click ctrlalt-menu populated=%s tag=%s sig=%s",
         tostring(populated), tostring(matchedTag), tostring(matchedSig))
 
-      -- Always-present safety net (proven working since 0.25.7) so the
-      -- menu is never completely empty even if native population above
-      -- silently did nothing (wrong/unregistered tag).
       rootDescription:CreateButton("Whisper", function()
         pcall(function()
           local name = UnitName(unit)
