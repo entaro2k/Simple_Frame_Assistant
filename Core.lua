@@ -2714,6 +2714,33 @@ local function SFA_ApiExists(getter)
   return ok and v ~= nil
 end
 
+-- 0.26.43: user-reported (2026-11-19) "nu a mers invite din meniu, nu a
+-- facut nimic, in schimb a mers trade". The difference: Trade/Follow
+-- re-target the unit first via a secure macro ("/target [@unit]\n/trade"),
+-- so Blizzard itself resolves which player is meant -- but Invite/Duel
+-- (and the plain-call rows: Add Friend, Whisper, Report Player, Copy
+-- Character Name) all used `UnitName(unit)`, which returns ONLY the short
+-- name, dropping the realm entirely. For a cross-realm unit (a different
+-- connected realm, a cross-realm group/BG/LFG member -- very plausible
+-- for a Target click, less so for Trade/Follow which only ever need
+-- "whoever my target currently is", not a resolvable name string), a bare
+-- short name is ambiguous or simply doesn't match anyone, so `/invite
+-- <name>` and `/duel <name>` silently find no one -- matches exactly what
+-- was reported (Invite did nothing, Trade worked). Fix: a helper that
+-- appends "-Realm" (Blizzard's own cross-realm name format) whenever
+-- UnitName's second return says the unit isn't on the player's own
+-- realm, and use it everywhere a bare unit name gets handed to a
+-- Blizzard command or API instead of going through a secure macro's own
+-- [@unit] resolution.
+local function SFA_UnitFullName(unit)
+  local name, realm = UnitName(unit)
+  if not name then return nil end
+  if realm and realm ~= "" then
+    return name .. "-" .. realm
+  end
+  return name
+end
+
 -- Row list for any non-self unit (target/focus/party/raid/NPC -- the union
 -- of every variant seen live: friendly NPC, enemy NPC, friendly player).
 local function SFA_BuildTargetMenuRows(self, unit)
@@ -2744,7 +2771,7 @@ local function SFA_BuildTargetMenuRows(self, unit)
 
   if SFA_ApiExists(function() return C_FriendList.AddFriend end) then
     plain("Add Friend", function()
-      local name = UnitName(unit)
+      local name = SFA_UnitFullName(unit)
       if name and C_FriendList and C_FriendList.AddFriend then
         C_FriendList.AddFriend(name)
       end
@@ -2755,12 +2782,12 @@ local function SFA_BuildTargetMenuRows(self, unit)
   header("Interact")
 
   do
-    local name = UnitName(unit)
+    local name = SFA_UnitFullName(unit)
     secure("invite", "Invite", name and ("/invite " .. name) or nil)
   end
 
   plain("Whisper", function()
-    local name = UnitName(unit)
+    local name = SFA_UnitFullName(unit)
     if name and ChatFrame_SendTell then ChatFrame_SendTell(name) end
   end)
 
@@ -2852,7 +2879,7 @@ local function SFA_BuildTargetMenuRows(self, unit)
     secure("follow", "Follow", okM and macroText or nil)
   end
   do
-    local name = UnitName(unit)
+    local name = SFA_UnitFullName(unit)
     secure("duel", "Duel", name and ("/duel " .. name) or nil)
   end
 
@@ -2885,7 +2912,7 @@ local function SFA_BuildTargetMenuRows(self, unit)
 
   if SFA_ApiExists(function() return C_ReportSystem.OpenReportPlayerDialog end) then
     plain("Report Player", function()
-      local name = UnitName(unit)
+      local name = SFA_UnitFullName(unit)
       if name and C_ReportSystem and C_ReportSystem.OpenReportPlayerDialog then
         C_ReportSystem.OpenReportPlayerDialog("cheating", name)
       end
@@ -2893,7 +2920,7 @@ local function SFA_BuildTargetMenuRows(self, unit)
   end
 
   plain("Copy Character Name", function()
-    SFA_ShowCopyNameBox(UnitName(unit))
+    SFA_ShowCopyNameBox(SFA_UnitFullName(unit))
   end)
 
   return rows
@@ -3245,7 +3272,7 @@ local function SFA_OnManagedFrameClick(self, frame, refKey, button)
 
       rootDescription:CreateButton("Whisper", function()
         pcall(function()
-          local name = UnitName(unit)
+          local name = SFA_UnitFullName(unit)
           if name and ChatFrame_SendTell then ChatFrame_SendTell(name) end
         end)
       end)
